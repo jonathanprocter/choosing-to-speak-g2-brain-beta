@@ -42,9 +42,42 @@ velvet-beta-local
 npm test
 ```
 
+## Render always-on app
+
+The repo root includes `render.yaml` for an always-on Render web service:
+
+```yaml
+type: web
+name: choosing-to-speak-brain
+runtime: node
+plan: starter
+rootDir: backend
+healthCheckPath: /v1/health
+```
+
+Render should run the service with `HOST=0.0.0.0` and `VELVETSPEAK_PUBLIC_BASE_URL=https://speak.procterai.cc`.
+
 ## Android beta note
 
-The patched Titan/G2 beta copy is configured for a plugged-in development run:
+The patched Titan/G2 beta copy is configured for the Cloudflare beta host:
+
+```text
+https://speak.procterai.cc
+wss://speak.procterai.cc/v1/transcribe/stream
+```
+
+On this Mac, `cloudflared` routes that hostname to `http://localhost:8788`. Start the backend with the public base URL so health responses and model routes match what the plugin sees:
+
+```bash
+HOST=127.0.0.1 PORT=8788 \
+  VELVETSPEAK_BETA_TOKEN=velvet-beta-local \
+  VELVETSPEAK_PUBLIC_BASE_URL=https://speak.procterai.cc \
+  npm start
+```
+
+The plugin's `g2Mic` path uses `WS /v1/transcribe/stream`, and the backend returns `stream.ready` after the plugin authenticates.
+
+For a plugged-in development run, you can still use ADB reverse and a local public base URL:
 
 ```bash
 adb -s TITAN20000001860 reverse tcp:8788 tcp:8788
@@ -53,7 +86,3 @@ HOST=127.0.0.1 PORT=8788 \
   VELVETSPEAK_PUBLIC_BASE_URL=http://127.0.0.1:8788 \
   npm start
 ```
-
-With that reverse active, `http://127.0.0.1:8788` and `ws://127.0.0.1:8788` inside the Android WebView reach this Mac backend. The plugin's `g2Mic` path uses `WS /v1/transcribe/stream`, and the backend returns `stream.ready` after the plugin authenticates.
-
-For an unplugged G2/phone run, put this service behind a reachable HTTPS/WSS URL and update the plugin runtime plus `app.json` whitelist to that URL.

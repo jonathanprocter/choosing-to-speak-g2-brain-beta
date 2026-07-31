@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: choosing-to-speak-brain
+    runtime: node
+    plan: starter
+    region: ohio
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /v1/health
+    autoDeployTrigger: commit
+    domains:
+      - speak.procterai.cc
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: VELVETSPEAK_BETA_TOKEN
+        value: velvet-beta-local
+      - key: VELVETSPEAK_PUBLIC_BASE_URL
+        value: https://speak.procterai.cc
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: WS_HEARTBEAT_INTERVAL_MS
+        value: 30000
+      - key: SHUTDOWN_TIMEOUT_MS
+        value: 25000

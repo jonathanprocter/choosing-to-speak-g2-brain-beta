@@ -10,6 +10,9 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const PROVIDER = 'choosing-to-speak-brain-backend';
 const VERSION = '0.1.0';
+const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
+const SHUTDOWN_TIMEOUT_MS = Number(env.SHUTDOWN_TIMEOUT_MS || 25000);
+const sockets = new Set();
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -40,6 +43,20 @@ server.listen(PORT, HOST, () => {
   console.log(`VoiceLock: disabled`);
   console.log(`OpenAI: ${env.OPENAI_API_KEY ? `enabled (${OPENAI_MODEL})` : 'disabled; deterministic fallback'}`);
 });
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
+
+function shutdown(signal) {
+  console.log(`${signal} received; closing Choosing to Speak brain backend.`);
+  server.close(() => process.exit(0));
+  for (const socket of sockets) {
+    if (!socket.destroyed) {
+      socket.end(encodeWsFrame(Buffer.from([0x03, 0xe9]), 8));
+    }
+  }
+  setTimeout(() => process.exit(0), SHUTDOWN_TIMEOUT_MS).unref();
+}
 
 async function handleHttp(req, res) {
   const url = new URL(req.url || '/', `http://${req.headers.host || `${HOST}:${PORT}`}`);
@@ -530,6 +547,30 @@ function handleWebSocket(req, socket, url) {
   let audioBytes = 0;
   let lastEmit = 0;
   let frameBuffer = Buffer.alloc(0);
+  let heartbeat = null;
+  let cleanedUp = false;
+
+  sockets.add(socket);
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    if (heartbeat) clearInterval(heartbeat);
+    sockets.delete(socket);
+  };
+  socket.on('close', cleanup);
+  socket.on('end', cleanup);
+  socket.on('error', cleanup);
+
+  if (Number.isFinite(WS_HEARTBEAT_INTERVAL_MS) && WS_HEARTBEAT_INTERVAL_MS > 0) {
+    heartbeat = setInterval(() => {
+      if (socket.destroyed) {
+        cleanup();
+        return;
+      }
+      socket.write(encodeWsFrame(Buffer.alloc(0), 9));
+    }, WS_HEARTBEAT_INTERVAL_MS);
+    heartbeat.unref();
+  }
 
   if (authed) sendWs(socket, { type: 'stream.ready' });
 
@@ -542,6 +583,13 @@ function handleWebSocket(req, socket, url) {
       if (frame.opcode === 8) {
         socket.end(encodeWsFrame(Buffer.from([0x03, 0xe8]), 8));
         return;
+      }
+      if (frame.opcode === 9) {
+        socket.write(encodeWsFrame(frame.payload, 10));
+        continue;
+      }
+      if (frame.opcode === 10) {
+        continue;
       }
       if (frame.opcode === 1) {
         const message = frame.payload.toString('utf8');
@@ -576,6 +624,7 @@ function handleWebSocket(req, socket, url) {
 }
 
 function sendWs(socket, payload) {
+  if (socket.destroyed) return;
   socket.write(encodeWsFrame(Buffer.from(JSON.stringify(payload), 'utf8'), 1));
 }
 
