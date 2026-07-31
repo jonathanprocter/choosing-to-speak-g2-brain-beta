@@ -64,8 +64,8 @@
       ],
       "credentials": {
         "googleCalendarOAuth2Api": {
-          "id": "",
-          "name": "Google Calendar (SimplePractice)"
+          "id": "UindCK5GkrI0gDDy",
+          "name": "Google Calendar account"
         }
       },
       "notes": "Use the existing n8nitro Google Calendar credential for the SimplePractice2 calendar. No secrets are stored in this workflow export."
@@ -137,8 +137,8 @@
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "",
-          "name": "OpenRouter API"
+          "id": "RGO9nQsApDV8p5kx",
+          "name": "OpenRouter Bearer Auth"
         }
       },
       "notes": "Use the existing n8nitro Header Auth credential named OpenRouter API. No API key is stored in this workflow export."
