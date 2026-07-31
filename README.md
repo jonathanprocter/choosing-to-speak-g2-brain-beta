@@ -1,11 +1,11 @@
-# VelvetSpeak G2 Brain Beta
+# Choosing to Speak G2 Brain Beta
 
-This repo contains the local VelvetSpeak G2 beta package and the companion brain backend used for the plugged-in Titan2/G2 development path.
+This repo contains the local Choosing to Speak G2 beta package and the companion brain backend used for the plugged-in Titan2/G2 development path. Choosing to Speak is the conversation-assistance piece of the Choosing Memento Vivere idea: intentional speech, remembered context, and real-time support without the old VoiceLock beta code.
 
 ## Contents
 
-- `backend/` - Node backend for VelvetSpeak brain, search, coaching, debrief, REST transcription, and G2 WebSocket transcription routes. VoiceLock is deliberately absent.
-- `plugin-beta/` - patched VelvetSpeak beta plugin cache package with VoiceLock UI/calls removed and a local runtime backend pointer.
+- `backend/` - Node backend for brain, search, coaching, debrief, REST transcription, and G2 WebSocket transcription routes. VoiceLock is deliberately absent.
+- `plugin-beta/` - patched Choosing to Speak beta plugin cache package with VoiceLock UI/calls removed and a local runtime backend pointer.
 
 ## Connected Titan2/G2 Run
 
@@ -22,10 +22,11 @@ The plugin uses `http://127.0.0.1:8788` and `ws://127.0.0.1:8788`. With ADB reve
 
 For an unplugged phone/glasses run, deploy the backend behind HTTPS/WSS and update the plugin runtime plus `app.json` whitelist.
 
+Some internal identifiers still say `velvetspeak` because the extracted Even/G2 plugin currently depends on those package, runtime, storage, and WebSocket contracts.
+
 ## Verify
 
 ```bash
 cd backend
 npm test
 ```
-

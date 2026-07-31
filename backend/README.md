@@ -1,6 +1,6 @@
-# VelvetSpeak Brain Backend
+# Choosing to Speak Brain Backend
 
-Small backend boundary for the VelvetSpeak beta plugin, with VoiceLock deliberately absent.
+Small backend boundary for the Choosing to Speak beta plugin, with VoiceLock deliberately absent.
 
 It implements the routes the extracted plugin already calls:
 
@@ -17,7 +17,7 @@ It implements the routes the extracted plugin already calls:
 ## Run locally
 
 ```bash
-cd ~/Desktop/VelvetSpeak_brain_backend
+cd ~/Desktop/choosing-to-speak-g2-brain-beta/backend
 cp .env.example .env
 npm start
 ```
@@ -27,6 +27,8 @@ For AI-generated coaching, set `OPENAI_API_KEY` in `.env`. Without it, the servi
 ## Auth
 
 The plugin sends a bearer token. The server accepts the token in `VELVETSPEAK_BETA_TOKEN`.
+
+The env var names are retained for compatibility with the extracted G2 plugin runtime.
 
 Default local token:
 

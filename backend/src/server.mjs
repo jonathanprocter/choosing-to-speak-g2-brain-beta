@@ -8,7 +8,7 @@ const PORT = Number(env.PORT || 8788);
 const BETA_TOKEN = env.VELVETSPEAK_BETA_TOKEN || 'velvet-beta-local';
 const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, '');
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
-const PROVIDER = 'velvetspeak-brain-backend';
+const PROVIDER = 'choosing-to-speak-brain-backend';
 const VERSION = '0.1.0';
 
 const server = http.createServer(async (req, res) => {
@@ -35,7 +35,7 @@ server.on('upgrade', (req, socket) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`VelvetSpeak brain backend listening on http://${HOST}:${PORT}`);
+  console.log(`Choosing to Speak brain backend listening on http://${HOST}:${PORT}`);
   console.log(`Public base URL: ${PUBLIC_BASE_URL}`);
   console.log(`VoiceLock: disabled`);
   console.log(`OpenAI: ${env.OPENAI_API_KEY ? `enabled (${OPENAI_MODEL})` : 'disabled; deterministic fallback'}`);
@@ -101,7 +101,7 @@ async function handleHttp(req, res) {
 function healthPayload() {
   return {
     ok: true,
-    service: 'velvetspeak-brain-backend',
+    service: 'choosing-to-speak-brain-backend',
     version: VERSION,
     provider: PROVIDER,
     routes: {
@@ -204,12 +204,12 @@ function buildLineOptions(input) {
 }
 
 function handleSearch(res, body) {
-  const query = cleanText(body?.query || 'VelvetSpeak search');
+  const query = cleanText(body?.query || 'Choosing to Speak search');
   const started = Date.now();
   sendJson(res, 200, {
     query,
     requestId: body?.requestId || requestId('search'),
-    summary: 'Search is routed through the VelvetSpeak backend boundary. Live web lookup is not enabled in this local build.',
+    summary: 'Search is routed through the Choosing to Speak backend boundary. Live web lookup is not enabled in this local build.',
     sources: [],
     provider: 'velvetspeak-backend-search',
     latencyMs: Math.max(0, Date.now() - started),
@@ -274,7 +274,7 @@ function handleCoachReview(res, body) {
 
 async function askOpenAI({ question, intent, settings, context }) {
   const prompt = [
-    'You are the VelvetSpeak live conversation brain.',
+    'You are the Choosing to Speak live conversation brain.',
     'Return only concise coaching text for smart-glasses display.',
     'No markdown fences. No safety boilerplate. No private chain of thought.',
     `Intent: ${intent}`,
