@@ -36,6 +36,48 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
 
     CREATE INDEX IF NOT EXISTS idx_memory_items_session_order
       ON memory_items(session_id, item_order);
+
+    CREATE TABLE IF NOT EXISTS client_contexts (
+      client_id TEXT PRIMARY KEY,
+      lens_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      source TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS client_context_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id TEXT NOT NULL REFERENCES client_contexts(client_id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      body TEXT NOT NULL,
+      item_order INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_client_contexts_lens_updated
+      ON client_contexts(lens_id, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_client_context_items_client_order
+      ON client_context_items(client_id, item_order);
+
+    CREATE TABLE IF NOT EXISTS day_roster_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      roster_date TEXT NOT NULL,
+      lens_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      starts_at TEXT NOT NULL,
+      ends_at TEXT NOT NULL,
+      source TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      notes TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(roster_date, lens_id, source, event_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_day_roster_date_lens_start
+      ON day_roster_entries(roster_date, lens_id, starts_at);
   `);
 
   const insertSession = db.prepare(`
@@ -53,6 +95,9 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
   `);
   const countSessions = db.prepare('SELECT COUNT(*) AS count FROM memory_sessions');
   const countItems = db.prepare('SELECT COUNT(*) AS count FROM memory_items');
+  const countClientContexts = db.prepare('SELECT COUNT(*) AS count FROM client_contexts');
+  const countClientContextItems = db.prepare('SELECT COUNT(*) AS count FROM client_context_items');
+  const countRosterEntries = db.prepare('SELECT COUNT(*) AS count FROM day_roster_entries');
   const deleteOldestSessions = db.prepare(`
     DELETE FROM memory_sessions
     WHERE session_id IN (
@@ -77,6 +122,76 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
     FROM memory_sessions s
     JOIN memory_items i ON i.session_id = s.session_id
     ORDER BY datetime(s.session_started_at) DESC, datetime(s.uploaded_at) DESC, i.item_order ASC
+    LIMIT ?
+  `);
+  const insertClientContext = db.prepare(`
+    INSERT INTO client_contexts (client_id, lens_id, display_name, source, summary, updated_at)
+    VALUES (@clientId, @lensId, @displayName, @source, @summary, @updatedAt)
+    ON CONFLICT(client_id) DO UPDATE SET
+      lens_id = excluded.lens_id,
+      display_name = excluded.display_name,
+      source = excluded.source,
+      summary = excluded.summary,
+      updated_at = excluded.updated_at
+  `);
+  const deleteClientContextItems = db.prepare('DELETE FROM client_context_items WHERE client_id = ?');
+  const insertClientContextItem = db.prepare(`
+    INSERT INTO client_context_items (client_id, kind, body, item_order)
+    VALUES (@clientId, @kind, @body, @itemOrder)
+  `);
+  const deleteClientContextById = db.prepare('DELETE FROM client_contexts WHERE client_id = ?');
+  const clientContextById = db.prepare(`
+    SELECT c.client_id, c.display_name, c.summary, i.kind, i.body, i.item_order
+    FROM client_contexts c
+    LEFT JOIN client_context_items i ON i.client_id = c.client_id
+    WHERE lower(c.client_id) = lower(?)
+    ORDER BY i.item_order ASC
+  `);
+  const clientContextByDisplayName = db.prepare(`
+    SELECT c.client_id, c.display_name, c.summary, i.kind, i.body, i.item_order
+    FROM client_contexts c
+    LEFT JOIN client_context_items i ON i.client_id = c.client_id
+    WHERE lower(c.display_name) = lower(?)
+    ORDER BY datetime(c.updated_at) DESC, i.item_order ASC
+    LIMIT ?
+  `);
+  const clientContextByLens = db.prepare(`
+    SELECT c.client_id, c.display_name, c.summary, i.kind, i.body, i.item_order
+    FROM client_contexts c
+    LEFT JOIN client_context_items i ON i.client_id = c.client_id
+    WHERE lower(c.lens_id) = lower(?)
+    ORDER BY datetime(c.updated_at) DESC, c.client_id ASC, i.item_order ASC
+    LIMIT ?
+  `);
+  const deleteRosterForSource = db.prepare(`
+    DELETE FROM day_roster_entries
+    WHERE roster_date = @rosterDate AND lower(lens_id) = lower(@lensId) AND source = @source
+  `);
+  const deleteRosterForDate = db.prepare(`
+    DELETE FROM day_roster_entries
+    WHERE roster_date = @rosterDate AND lower(lens_id) = lower(@lensId)
+  `);
+  const insertRosterEntry = db.prepare(`
+    INSERT INTO day_roster_entries (
+      roster_date, lens_id, client_id, display_name, starts_at, ends_at, source, event_id, status, notes, updated_at
+    )
+    VALUES (
+      @rosterDate, @lensId, @clientId, @displayName, @startsAt, @endsAt, @source, @eventId, @status, @notes, @updatedAt
+    )
+    ON CONFLICT(roster_date, lens_id, source, event_id) DO UPDATE SET
+      client_id = excluded.client_id,
+      display_name = excluded.display_name,
+      starts_at = excluded.starts_at,
+      ends_at = excluded.ends_at,
+      status = excluded.status,
+      notes = excluded.notes,
+      updated_at = excluded.updated_at
+  `);
+  const rosterForDateLens = db.prepare(`
+    SELECT client_id, display_name, starts_at, ends_at, source, event_id, status, notes
+    FROM day_roster_entries
+    WHERE roster_date = ? AND (lower(lens_id) = lower(?) OR lens_id = 'default')
+    ORDER BY datetime(starts_at) ASC, display_name ASC
     LIMIT ?
   `);
 
@@ -105,6 +220,49 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
     });
     trim();
   });
+  const upsertClientContext = db.transaction((context) => {
+    insertClientContext.run({
+      clientId: context.clientId,
+      lensId: context.lensId || 'default',
+      displayName: context.displayName,
+      source: context.source || 'api',
+      summary: context.summary || '',
+      updatedAt: context.updatedAt
+    });
+    deleteClientContextItems.run(context.clientId);
+    context.items.forEach((item, index) => {
+      insertClientContextItem.run({
+        clientId: context.clientId,
+        kind: item.kind,
+        body: item.body,
+        itemOrder: index
+      });
+    });
+  });
+  const upsertDayRoster = db.transaction((roster) => {
+    if (roster.replace !== false) {
+      deleteRosterForSource.run({
+        rosterDate: roster.rosterDate,
+        lensId: roster.lensId || 'default',
+        source: roster.source || 'calendar-sync'
+      });
+    }
+    roster.entries.forEach((entry, index) => {
+      insertRosterEntry.run({
+        rosterDate: roster.rosterDate,
+        lensId: roster.lensId || 'default',
+        clientId: entry.clientId,
+        displayName: entry.displayName,
+        startsAt: entry.startsAt,
+        endsAt: entry.endsAt,
+        source: roster.source || 'calendar-sync',
+        eventId: entry.eventId || `${entry.clientId}-${entry.startsAt}-${index}`,
+        status: entry.status || 'scheduled',
+        notes: entry.notes || '',
+        updatedAt: roster.updatedAt
+      });
+    });
+  });
 
   return {
     driver: 'sqlite',
@@ -132,12 +290,70 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
       const rows = wanted ? hintsForLens.all(wanted, boundedLimit) : hintsForAll.all(boundedLimit);
       return rows.map((row) => `${row.kind}: ${row.body}`);
     },
+    upsertClientContext(context) {
+      if (!context?.clientId || !context?.displayName || !Array.isArray(context.items)) {
+        return { storedItems: 0 };
+      }
+      upsertClientContext(context);
+      return { storedItems: context.items.length };
+    },
+    deleteClientContext(clientId) {
+      return deleteClientContextById.run(clientId).changes;
+    },
+    upsertDayRoster(roster) {
+      if (!roster?.rosterDate || !Array.isArray(roster.entries)) {
+        return { storedItems: 0 };
+      }
+      upsertDayRoster(roster);
+      return { storedItems: roster.entries.length };
+    },
+    deleteDayRoster({ rosterDate = '', lensId = 'default' } = {}) {
+      if (!rosterDate) return 0;
+      return deleteRosterForDate.run({ rosterDate, lensId: lensId || 'default' }).changes;
+    },
+    rosterCandidates({ lensId = '', date = '', at = '', limit = 8 } = {}) {
+      const rosterDate = String(date || '').trim();
+      if (!rosterDate) return [];
+      const boundedLimit = Math.max(1, Math.min(48, Math.trunc(Number(limit) || 8)));
+      const rows = rosterForDateLens.all(rosterDate, String(lensId || 'default').trim() || 'default', boundedLimit * 4);
+      return rankRosterRows(rows, { at, limit: boundedLimit });
+    },
+    clientHints({ lensId = '', clientId = '', displayName = '', limit = 8, includeLensFallback = false } = {}) {
+      const boundedLimit = Math.max(1, Math.min(24, Math.trunc(Number(limit) || 8)));
+      const rows = [];
+      const seenClients = new Set();
+      for (const id of uniqueTruthy([clientId])) {
+        for (const row of clientContextById.all(id)) {
+          rows.push(row);
+          if (row.client_id) seenClients.add(row.client_id.toLowerCase());
+        }
+      }
+      const name = String(displayName || '').trim();
+      if (name) {
+        for (const row of clientContextByDisplayName.all(name, boundedLimit)) {
+          if (row.client_id && seenClients.has(row.client_id.toLowerCase())) continue;
+          rows.push(row);
+        }
+      }
+      const wantedLens = includeLensFallback ? String(lensId || '').trim() : '';
+      if (wantedLens) {
+        for (const row of clientContextByLens.all(wantedLens, boundedLimit)) {
+          if (row.client_id && seenClients.has(row.client_id.toLowerCase())) continue;
+          rows.push(row);
+          if (row.client_id) seenClients.add(row.client_id.toLowerCase());
+        }
+      }
+      return formatClientContextRows(rows, boundedLimit);
+    },
     stats() {
       return {
         driver: 'sqlite',
         persistent: resolvedPath !== ':memory:',
         sessions: countSessions.get().count,
         items: countItems.get().count,
+        clients: countClientContexts.get().count,
+        clientItems: countClientContextItems.get().count,
+        rosterEntries: countRosterEntries.get().count,
         maxSessions: normalizeMaxSessions(maxSessions)
       };
     },
@@ -151,4 +367,64 @@ function normalizeMaxSessions(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 500;
   return Math.max(1, Math.min(5000, Math.trunc(number)));
+}
+
+function uniqueTruthy(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = String(value || '').trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
+}
+
+function formatClientContextRows(rows, limit) {
+  const result = [];
+  const seen = new Set();
+  for (const row of rows) {
+    for (const text of [
+      row.summary ? `client summary: ${row.summary}` : '',
+      row.kind && row.body ? `client ${row.kind}: ${row.body}` : ''
+    ]) {
+      const key = text.toLowerCase();
+      if (!text || seen.has(key)) continue;
+      seen.add(key);
+      result.push(text);
+      if (result.length >= limit) return result;
+    }
+  }
+  return result;
+}
+
+function rankRosterRows(rows, { at = '', limit = 8 } = {}) {
+  const anchor = Date.parse(at || '');
+  return rows
+    .map((row) => {
+      const starts = Date.parse(row.starts_at || '');
+      const ends = Date.parse(row.ends_at || '');
+      const distanceMs = Number.isFinite(anchor) && Number.isFinite(starts)
+        ? Math.abs(anchor - starts)
+        : 0;
+      const active = Number.isFinite(anchor) && Number.isFinite(starts) && Number.isFinite(ends)
+        ? anchor >= starts - 15 * 60 * 1000 && anchor <= ends + 15 * 60 * 1000
+        : false;
+      return {
+        clientId: row.client_id,
+        displayName: row.display_name,
+        startsAt: row.starts_at,
+        endsAt: row.ends_at,
+        source: row.source,
+        eventId: row.event_id,
+        status: row.status,
+        notes: row.notes,
+        active,
+        distanceMs
+      };
+    })
+    .sort((a, b) => Number(b.active) - Number(a.active) || a.distanceMs - b.distanceMs || a.startsAt.localeCompare(b.startsAt))
+    .slice(0, limit);
 }

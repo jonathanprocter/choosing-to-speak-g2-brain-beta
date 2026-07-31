@@ -13,10 +13,16 @@ It implements the routes the extracted plugin already calls:
 - `POST /v1/coach`
 - `POST /v1/debrief`
 - `POST /v1/coach_review`
+- `POST /v1/question_cues`
 - `POST /v1/memory/enable`
 - `POST /v1/memory/sessions`
+- `POST /v1/client_context`
+- `POST /v1/day_roster`
+- `POST /v1/client_candidate`
 - `DELETE /v1/memory`
 - `DELETE /v1/memory/sessions/:sessionId`
+- `DELETE /v1/client_context/:clientId`
+- `DELETE /v1/day_roster/:date?lensId=clinical`
 
 ## Run locally
 
@@ -35,6 +41,47 @@ backend/data/choosing-to-speak-memory.sqlite
 ```
 
 Set `MEMORY_DB_PATH` to override it. The health endpoint reports `ai.memorySync=sqlite_persistent` and includes memory row counts.
+
+Client prep and daily roster matching use the same SQLite file. The backend matches roster dates in `America/New_York`, not UTC, so late-evening Eastern appointments do not roll into the next day just because the server is running on UTC.
+
+## Client prep and daily roster
+
+Use `POST /v1/client_context` for durable prep from Notion or the clinical HUD:
+
+```json
+{
+  "clientId": "client-123",
+  "displayName": "Client Name",
+  "lensId": "clinical",
+  "source": "notion-clinical-hud",
+  "summary": "What matters for this client today.",
+  "bestQuestions": ["What would make this next step feel doable?"],
+  "risks": ["Do not rush into scripts before validating fatigue."]
+}
+```
+
+Use `POST /v1/day_roster` for the SimplePractice-synced calendar day:
+
+```json
+{
+  "rosterDate": "2026-07-31",
+  "lensId": "clinical",
+  "source": "simplepractice-calendar-sync",
+  "entries": [
+    {
+      "eventId": "simplepractice-event-id",
+      "clientId": "client-123",
+      "clientName": "Client Name",
+      "start": "2:00 PM",
+      "durationMinutes": 50,
+      "summary": "Optional Notion prep can ride along here.",
+      "bestQuestions": ["What feels most important to cover today?"]
+    }
+  ]
+}
+```
+
+The plugin bridge calls `POST /v1/client_candidate` to suggest the most likely client for the current Eastern-time appointment window. Dismissed candidates are sent as `dismissedClientIds`, and a manual name can be sent as `manualClientContext`.
 
 ## Auth
 

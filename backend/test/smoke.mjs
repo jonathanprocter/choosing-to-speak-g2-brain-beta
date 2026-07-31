@@ -26,6 +26,10 @@ try {
   assert.equal(health.ai.coachCueMode, 'contextual_auto_ephemeral');
   assert.equal(health.ai.debrief, 'deterministic_session_intel');
   assert.equal(health.ai.memorySync, 'sqlite_persistent');
+  assert.equal(health.ai.clientContext, 'sqlite_contextual_question_cues');
+  assert.equal(health.ai.dayRoster, 'calendar_sync_candidate_resolver');
+  assert.equal(health.calendar.timeZone, 'America/New_York');
+  assert.equal(health.calendar.dateMode, 'local_day_not_utc');
   assert.equal(health.memory.driver, 'sqlite');
   assert.equal(health.memory.persistent, true);
 
@@ -156,9 +160,114 @@ try {
   assert.equal(memoryUpload.ok, true);
   assert.equal(memoryUpload.status, 'uploaded');
 
+  const rosterUpload = await fetch(`${base}/v1/day_roster`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      rosterDate: '2026-07-31',
+      lensId: 'clinical',
+      source: 'simplepractice-calendar-sync',
+      entries: [
+        {
+          eventId: 'sp-smoke-1',
+          clientId: 'client-smoke',
+          clientName: 'Smoke Client',
+          start: '11:15 PM',
+          durationMinutes: 50,
+          summary: 'Client folds quickly when family pushes back.',
+          bestQuestions: ['What boundary would protect your Sunday without over-explaining?'],
+          risks: ['Do not rush into scripts before validating fatigue.'],
+          source: 'notion-clinical-hud'
+        }
+      ]
+    })
+  }).then((res) => res.json());
+  assert.equal(rosterUpload.ok, true);
+  assert.equal(rosterUpload.rosterDate, '2026-07-31');
+  assert.equal(rosterUpload.storedItems, 1);
+  assert.equal(rosterUpload.storedClientContexts, 1);
+
+  const candidate = await fetch(`${base}/v1/client_candidate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      lensId: 'clinical',
+      at: '2026-08-01T03:30:00.000Z'
+    })
+  }).then((res) => res.json());
+  assert.equal(candidate.type, 'client_candidate.result.v1');
+  assert.equal(candidate.rosterDate, '2026-07-31');
+  assert.equal(candidate.selected.displayName, 'Smoke Client');
+  assert.equal(candidate.selected.reason, 'calendar_window_match');
+  assert.match(candidate.contextHints.join(' '), /protect your Sunday/i);
+
+  const dismissedCandidate = await fetch(`${base}/v1/client_candidate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      lensId: 'clinical',
+      at: '2026-08-01T03:30:00.000Z',
+      dismissedClientIds: ['client-smoke']
+    })
+  }).then((res) => res.json());
+  assert.equal(dismissedCandidate.selected, null);
+
+  const manualCandidate = await fetch(`${base}/v1/client_candidate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      lensId: 'clinical',
+      at: '2026-08-01T03:30:00.000Z',
+      manualClientContext: {
+        clientId: 'client-manual-smoke',
+        displayName: 'Manual Smoke',
+        lensId: 'clinical',
+        summary: 'Manual override client context.',
+        bestQuestions: ['What would make this next step feel doable?']
+      }
+    })
+  }).then((res) => res.json());
+  assert.equal(manualCandidate.selected.reason, 'manual_override');
+
+  const questionCue = await fetch(`${base}/v1/question_cues`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      lensId: 'clinical',
+      at: '2026-08-01T03:30:00.000Z',
+      transcript: 'My family keeps pushing me and I keep folding even when I am tired.'
+    })
+  }).then((res) => res.json());
+  assert.equal(questionCue.type, 'question_cues.result.v1');
+  assert.equal(questionCue.clientContextUsed.displayName, 'Smoke Client');
+  assert.match(questionCue.questions[0].text, /protect your Sunday/i);
+
+  const clientCoach = await fetch(`${base}/v1/coach`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      type: 'coach_digest',
+      sessionId: 'client-context-smoke',
+      lensId: 'clinical',
+      at: '2026-08-01T03:30:00.000Z',
+      transcript: 'My family keeps pushing me and I keep folding even when I am tired.',
+      recentTurns: [
+        { speaker: 'client', text: 'My family keeps pushing me and I keep folding.', atMs: 1000, endedAtMs: 8000 },
+        { speaker: 'therapist', text: 'Let us slow that down.', atMs: 8200, endedAtMs: 9500 }
+      ]
+    })
+  }).then((res) => res.json());
+  assert.equal(clientCoach.type, 'coach.result.v1');
+  assert.equal(clientCoach.clientContextUsed.displayName, 'Smoke Client');
+  assert.equal(clientCoach.clientContextUsed.rosterMatched, true);
+  assert.match(clientCoach.sayThis.join(' '), /protect your Sunday/i);
+
   const memoryHealth = await fetch(`${base}/v1/health`).then((res) => res.json());
   assert.ok(memoryHealth.memory.sessions >= 2);
   assert.ok(memoryHealth.memory.items >= 2);
+  assert.ok(memoryHealth.memory.clients >= 2);
+  assert.ok(memoryHealth.memory.clientItems >= 2);
+  assert.ok(memoryHealth.memory.rosterEntries >= 1);
   assert.ok((await stat(memoryDbPath)).size > 0);
 
   await stopServer(child);
@@ -177,6 +286,30 @@ try {
   }).then((res) => res.json());
   assert.ok(persistedCoach.nudge);
   assert.match(persistedCoach.nudge.explanation, /named examples/i);
+
+  const persistedQuestionCue = await fetch(`${base}/v1/question_cues`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      lensId: 'clinical',
+      at: '2026-08-01T03:30:00.000Z',
+      transcript: 'My family keeps pushing me and I keep folding even when I am tired.'
+    })
+  }).then((res) => res.json());
+  assert.equal(persistedQuestionCue.clientContextUsed.displayName, 'Smoke Client');
+  assert.match(persistedQuestionCue.questions[0].text, /protect your Sunday/i);
+
+  const clientContextPurge = await fetch(`${base}/v1/client_context/client-smoke`, {
+    method: 'DELETE',
+    headers
+  }).then((res) => res.json());
+  assert.equal(clientContextPurge.ok, true);
+
+  const dayRosterPurge = await fetch(`${base}/v1/day_roster/2026-07-31?lensId=clinical`, {
+    method: 'DELETE',
+    headers
+  }).then((res) => res.json());
+  assert.equal(dayRosterPurge.ok, true);
 
   const memoryPurge = await fetch(`${base}/v1/memory/sessions/memory-smoke`, {
     method: 'DELETE',
@@ -210,7 +343,8 @@ function startServer({ port, token, memoryDbPath }) {
       VELVETSPEAK_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
       OPENAI_API_KEY: '',
       MEMORY_DB_PATH: memoryDbPath,
-      MEMORY_MAX_SESSIONS: '20'
+      MEMORY_MAX_SESSIONS: '20',
+      CALENDAR_TIME_ZONE: 'America/New_York'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });

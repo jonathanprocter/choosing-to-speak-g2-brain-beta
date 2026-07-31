@@ -12,10 +12,11 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.4';
+const VERSION = '0.1.5';
 const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
 const MEMORY_DB_PATH = env.MEMORY_DB_PATH || env.SQLITE_DB_PATH || new URL('../data/choosing-to-speak-memory.sqlite', import.meta.url).pathname;
 const MEMORY_MAX_SESSIONS = env.MEMORY_MAX_SESSIONS || 500;
+const ROSTER_TIME_ZONE = env.CALENDAR_TIME_ZONE || env.ROSTER_TIME_ZONE || 'America/New_York';
 const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
 const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 96000);
 const WS_TRANSCRIBE_INTERVAL_MS = Number(env.WS_TRANSCRIBE_INTERVAL_MS || 4500);
@@ -120,6 +121,14 @@ async function handleHttp(req, res) {
       handleMemorySessionPurge(res, decodeURIComponent(url.pathname.split('/').pop() || ''));
       return;
     }
+    if (url.pathname.startsWith('/v1/client_context/')) {
+      handleClientContextPurge(res, decodeURIComponent(url.pathname.split('/').pop() || ''));
+      return;
+    }
+    if (url.pathname.startsWith('/v1/day_roster/')) {
+      handleDayRosterPurge(res, decodeURIComponent(url.pathname.split('/').pop() || ''), url.searchParams);
+      return;
+    }
     sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Route not found.' } });
     return;
   }
@@ -145,11 +154,23 @@ async function handleHttp(req, res) {
     case '/v1/coach_review':
       await handleCoachReview(res, body);
       return;
+    case '/v1/question_cues':
+      await handleQuestionCues(res, body);
+      return;
     case '/v1/memory/enable':
       handleMemoryEnable(res);
       return;
     case '/v1/memory/sessions':
       handleMemorySessionUpload(res, body);
+      return;
+    case '/v1/client_context':
+      handleClientContextUpload(res, body);
+      return;
+    case '/v1/day_roster':
+      handleDayRosterUpload(res, body);
+      return;
+    case '/v1/client_candidate':
+      handleClientCandidate(res, body);
       return;
     case '/v1/phone_mic_proof':
       sendJson(res, 200, { proofId: requestId('phone-proof') });
@@ -173,7 +194,11 @@ function healthPayload() {
       transcribeStream: `${PUBLIC_BASE_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/v1/transcribe/stream`,
       debrief: `${PUBLIC_BASE_URL}/v1/debrief`,
       coachReview: `${PUBLIC_BASE_URL}/v1/coach_review`,
-      memorySessions: `${PUBLIC_BASE_URL}/v1/memory/sessions`
+      questionCues: `${PUBLIC_BASE_URL}/v1/question_cues`,
+      memorySessions: `${PUBLIC_BASE_URL}/v1/memory/sessions`,
+      clientContext: `${PUBLIC_BASE_URL}/v1/client_context`,
+      dayRoster: `${PUBLIC_BASE_URL}/v1/day_roster`,
+      clientCandidate: `${PUBLIC_BASE_URL}/v1/client_candidate`
     },
     voiceLock: {
       enabled: false,
@@ -185,7 +210,14 @@ function healthPayload() {
       voiceProfile: JONATHAN_VOICE_ENABLED ? 'jonathan_live_response' : 'neutral',
       coachCueMode: 'contextual_auto_ephemeral',
       debrief: env.OPENAI_API_KEY ? 'openai_session_intel' : 'deterministic_session_intel',
-      memorySync: 'sqlite_persistent'
+      memorySync: 'sqlite_persistent',
+      clientContext: 'sqlite_contextual_question_cues',
+      dayRoster: 'calendar_sync_candidate_resolver',
+      dynamics: 'clinical_hud_inspired_metrics'
+    },
+    calendar: {
+      timeZone: ROSTER_TIME_ZONE,
+      dateMode: 'local_day_not_utc'
     },
     memory: memoryStats
   };
@@ -324,7 +356,10 @@ async function handleCoach(res, body) {
     modelRoute: `${PUBLIC_BASE_URL}/v1/coach`,
     latencyMs: Math.max(0, Date.now() - started),
     nudge: result.nudge,
-    sayThis: result.sayThis
+    sayThis: result.sayThis,
+    questionCue: result.questionCue || buildQuestionCue(context),
+    dynamics: context.dynamics,
+    clientContextUsed: summarizeClientContextUse(context)
   });
 }
 
@@ -403,6 +438,164 @@ function handleMemorySessionPurge(res, sessionId) {
   sendJson(res, 200, { ok: true, purged });
 }
 
+function handleClientContextUpload(res, body) {
+  const context = normalizeClientContext(body);
+  if (!context) {
+    sendJson(res, 400, {
+      ok: false,
+      error: {
+        code: 'INVALID_CLIENT_CONTEXT',
+        message: 'Client context needs a client name/id plus at least a summary or one item.'
+      }
+    });
+    return;
+  }
+  const stored = memoryStore.upsertClientContext(context);
+  sendJson(res, 200, {
+    ok: true,
+    status: 'uploaded',
+    clientId: context.clientId,
+    displayName: context.displayName,
+    storedItems: stored.storedItems,
+    updatedAt: context.updatedAt
+  });
+}
+
+function handleClientContextPurge(res, clientId) {
+  const id = cleanText(clientId);
+  const purged = id ? memoryStore.deleteClientContext(id) : 0;
+  sendJson(res, 200, { ok: true, purged });
+}
+
+function handleDayRosterUpload(res, body) {
+  const roster = normalizeDayRoster(body);
+  if (!roster) {
+    sendJson(res, 400, {
+      ok: false,
+      error: {
+        code: 'INVALID_DAY_ROSTER',
+        message: 'Day roster needs a date plus at least one appointment with a client name and start time.'
+      }
+    });
+    return;
+  }
+  const stored = memoryStore.upsertDayRoster(roster);
+  let storedClientContexts = 0;
+  for (const entry of roster.entries) {
+    if (entry.clientContext) {
+      const clientStored = memoryStore.upsertClientContext(entry.clientContext);
+      if (clientStored.storedItems > 0 || entry.clientContext.summary) storedClientContexts += 1;
+    }
+  }
+  sendJson(res, 200, {
+    ok: true,
+    status: 'uploaded',
+    rosterDate: roster.rosterDate,
+    lensId: roster.lensId,
+    source: roster.source,
+    storedItems: stored.storedItems,
+    storedClientContexts,
+    updatedAt: roster.updatedAt
+  });
+}
+
+function handleDayRosterPurge(res, rosterDate, searchParams) {
+  const date = cleanText(rosterDate);
+  const lensId = cleanText(searchParams?.get('lensId') || searchParams?.get('lens') || 'default') || 'default';
+  const purged = date ? memoryStore.deleteDayRoster({ rosterDate: date, lensId }) : 0;
+  sendJson(res, 200, { ok: true, purged });
+}
+
+function handleClientCandidate(res, body) {
+  const source = isRecord(body?.input) ? body.input : body;
+  const lensId = cleanText(source?.lensId || source?.activeLensId || 'clinical') || 'clinical';
+  const at = normalizeDate(source?.at || source?.now || source?.timestamp) || new Date().toISOString();
+  const rosterDate = normalizeRosterDate(source?.date || source?.rosterDate, at);
+  const dismissed = new Set(
+    (Array.isArray(source?.dismissedClientIds) ? source.dismissedClientIds : [])
+      .map((item) => cleanText(item).toLowerCase())
+      .filter(Boolean)
+  );
+  const manualSource = source?.manualClientContext ||
+    source?.manualClient ||
+    source?.clientContext ||
+    (source?.manualClientName || source?.manualName
+      ? { displayName: source.manualClientName || source.manualName, lensId, source: 'manual' }
+      : null);
+  const manualContext = normalizeClientContext(manualSource);
+  const manualDisplayName = cleanText(manualContext?.displayName || manualSource?.displayName || manualSource?.clientName || manualSource?.name || '');
+  const manualClientId = cleanText(manualContext?.clientId || manualSource?.clientId || manualSource?.client_id || '') ||
+    (manualDisplayName ? stableClientId(manualDisplayName, 'manual') : '');
+  if (manualContext || manualDisplayName || manualClientId) {
+    if (manualContext) memoryStore.upsertClientContext(manualContext);
+    sendJson(res, 200, {
+      type: 'client_candidate.result.v1',
+      requestId: source?.requestId || requestId('client-candidate'),
+      provider: PROVIDER,
+      selected: {
+        clientId: manualContext?.clientId || manualClientId,
+        displayName: manualContext?.displayName || manualDisplayName || manualClientId,
+        source: manualContext?.source || 'manual',
+        confidence: 1,
+        reason: 'manual_override'
+      },
+      candidates: [],
+      contextHints: manualContext ? memoryStore.clientHints({
+        lensId,
+        clientId: manualContext.clientId,
+        displayName: manualContext.displayName,
+        limit: 8
+      }) : []
+    });
+    return;
+  }
+  const candidates = memoryStore
+    .rosterCandidates({ lensId, date: rosterDate, at, limit: 8 })
+    .filter((candidate) => !dismissed.has(cleanText(candidate.clientId).toLowerCase()));
+  const selected = candidates[0] || null;
+  const contextHints = selected
+    ? memoryStore.clientHints({ lensId, clientId: selected.clientId, displayName: selected.displayName, limit: 8 })
+    : [];
+  sendJson(res, 200, {
+    type: 'client_candidate.result.v1',
+    requestId: source?.requestId || requestId('client-candidate'),
+    provider: PROVIDER,
+    rosterDate,
+    selected: selected
+      ? {
+          clientId: selected.clientId,
+          displayName: selected.displayName,
+          startsAt: selected.startsAt,
+          endsAt: selected.endsAt,
+          source: selected.source,
+          confidence: selected.active ? 0.86 : 0.64,
+          reason: selected.active ? 'calendar_window_match' : 'nearest_calendar_event'
+        }
+      : null,
+    candidates,
+    contextHints
+  });
+}
+
+async function handleQuestionCues(res, body) {
+  const started = Date.now();
+  const context = extractCoachContext(body);
+  const requestIdValue = body?.requestId || requestId('question-cues');
+  const questionCue = buildQuestionCue(context);
+  sendJson(res, 200, {
+    type: 'question_cues.result.v1',
+    requestId: requestIdValue,
+    provider: PROVIDER,
+    modelRoute: `${PUBLIC_BASE_URL}/v1/question_cues`,
+    latencyMs: Math.max(0, Date.now() - started),
+    nudge: questionCue.nudge,
+    sayThis: questionCue.questions.map((question) => question.text).slice(0, 2),
+    questions: questionCue.questions,
+    dynamics: context.dynamics,
+    clientContextUsed: summarizeClientContextUse(context)
+  });
+}
+
 async function askOpenAI({ question, intent, settings, context }) {
   const prompt = [
     'You are the Choosing to Speak live conversation brain.',
@@ -444,6 +637,8 @@ async function askOpenAICoach(context) {
     'You are the Choosing to Speak automatic coaching lane for smart glasses.',
     'Generate one short, timely coaching cue based on the SCENE CONTEXT and the recent transcript.',
     'Scene context is primary: role, person, goal, vibe, boundaries, risks, and pre-session notes should shape the cue.',
+    'Client context is durable prep for this person or account. Use it to choose the best question or next move.',
+    'Conversation dynamics show whether the wearer should listen, repair, clarify, or ask a sharper question.',
     'The cue must feel like it belongs to this exact conversation, not generic advice.',
     'Prefer a concrete next thing the wearer can ask, say, notice, or avoid.',
     'If the transcript contains an interview-style question, give a concise answer frame tied to the scene goal.',
@@ -455,6 +650,8 @@ async function askOpenAICoach(context) {
     `Lens: ${context.lensId || 'default'}`,
     context.sessionLanguage && context.sessionLanguage !== 'en' ? `Language: ${context.sessionLanguage}` : '',
     context.memory.length ? `SCENE CONTEXT:\n${context.memory.map((item) => `- ${item}`).join('\n')}` : '',
+    context.clientContext?.hints ? `Client context used: ${context.clientContext.hints} hint(s)` : '',
+    context.dynamics ? `Dynamics: ${JSON.stringify(context.dynamics)}` : '',
     `Recent transcript:\n${context.transcript}`
   ].filter(Boolean).join('\n');
 
@@ -493,6 +690,8 @@ async function askOpenAIDebrief(input) {
     'Limits: summary <= 600 chars. lesson <= 220 chars. commitments <= 8. moments <= 2.',
     input.goal ? `Goal: ${input.goal}` : 'Goal: none',
     input.context.length ? `Prior/session context:\n${input.context.map((item) => `- ${item}`).join('\n')}` : '',
+    input.clientContext?.displayName ? `Selected client: ${input.clientContext.displayName}` : '',
+    input.dynamics ? `Conversation dynamics: ${JSON.stringify(input.dynamics)}` : '',
     input.capturedItems.length ? `Captured items:\n${input.capturedItems.map((item) => `- ${item.kind}: ${item.text}`).join('\n')}` : '',
     `Transcript:\n${input.transcript || '(no transcript)'}`
   ].filter(Boolean).join('\n');
@@ -530,6 +729,8 @@ async function askOpenAICoachReview(input) {
     'Limits: moments <= 4. commitments <= 12. coaching <= 4. lesson <= 220 chars.',
     input.goal ? `Goal: ${input.goal}` : 'Goal: none',
     input.context.length ? `Prior/session context:\n${input.context.map((item) => `- ${item}`).join('\n')}` : '',
+    input.clientContext?.displayName ? `Selected client: ${input.clientContext.displayName}` : '',
+    input.dynamics ? `Conversation dynamics: ${JSON.stringify(input.dynamics)}` : '',
     input.capturedItems.length ? `Captured items:\n${input.capturedItems.map((item) => `- ${item.kind}: ${item.text}`).join('\n')}` : '',
     `Transcript:\n${input.transcript || '(no transcript)'}`
   ].filter(Boolean).join('\n');
@@ -672,6 +873,14 @@ function parseCoachJson(text) {
 }
 
 function deterministicCoach(context) {
+  const questionCue = buildQuestionCue(context);
+  if (questionCue.source === 'client_context' || questionCue.source === 'dynamics') {
+    return {
+      nudge: questionCue.nudge,
+      sayThis: questionCue.questions.map((question) => question.text).slice(0, 2),
+      questionCue
+    };
+  }
   const topic = summarizeQuestion(context.transcript || context.memory.join(' '));
   const memoryHint = context.memory[0] ? ` Tie it to prep: ${truncate(context.memory[0], 90)}` : '';
   if (/\?/.test(context.transcript)) {
@@ -680,7 +889,8 @@ function deterministicCoach(context) {
         teaser: 'Use the scene goal as the frame.',
         explanation: `Answer directly, then connect one concrete example to the scene goal.${memoryHint}`
       },
-      sayThis: [`The short answer is this: ${topic}.`, 'One example that shows that is...']
+      sayThis: [`The short answer is this: ${topic}.`, 'One example that shows that is...'],
+      questionCue
     };
   }
   return {
@@ -688,7 +898,8 @@ function deterministicCoach(context) {
       teaser: 'Move the scene forward.',
       explanation: `Use the context you set before the session, then ask one short question that narrows ${topic}.${memoryHint}`
     },
-    sayThis: [`What matters most about ${topic} right now?`, 'Can you give me one concrete example?']
+    sayThis: questionCue.questions.map((question) => question.text).slice(0, 2),
+    questionCue
   };
 }
 
@@ -795,13 +1006,8 @@ function extractCoachContext(body) {
     : Array.isArray(digest?.recentTurns)
       ? digest.recentTurns
       : [];
-  const recentTurns = turnSource
-        .map((turn) => {
-          const speaker = cleanText(turn?.speaker || turn?.speakerKind || '');
-          const text = cleanText(turn?.text || '');
-          return text ? `${speaker ? `${speaker}: ` : ''}${text}` : '';
-        })
-        .filter(Boolean);
+  const turns = normalizeCoachTurns(turnSource);
+  const recentTurns = turns.map((turn) => `${turn.speakerLabel || turn.speakerKind}: ${turn.text}`);
   const digestText = typeof body?.digest === 'string' ? body.digest : digest?.windowSummary;
   const transcript = cleanText([
     body?.transcript,
@@ -826,12 +1032,23 @@ function extractCoachContext(body) {
     }
   }
   const lensId = cleanText(body?.lensId || body?.activeLensId || '');
+  const clientContext = resolveClientContextForRequest(body, { lensId });
+  if (clientContext?.calendarHint) memory.push(clientContext.calendarHint);
+  for (const text of clientContext?.inlineHints || []) {
+    memory.push(truncate(text, 240));
+  }
+  for (const text of clientContext?.storedHints || []) {
+    memory.push(truncate(text, 240));
+  }
   for (const text of storedMemoryHints({ lensId, limit: 6 })) {
     memory.push(truncate(text, 240));
   }
   return {
     transcript: truncate(transcript, 3000),
     memory: uniqueStrings(memory).slice(0, 10),
+    turns,
+    dynamics: buildConversationDynamics(turns, body),
+    clientContext,
     lensId,
     sessionLanguage: cleanText(body?.sessionLanguage || '')
   };
@@ -882,6 +1099,10 @@ function extractDebriefInput(body) {
     context.push(...extractContextStrings(value).map((item) => truncate(item, 240)));
   }
   const lensId = cleanText(source?.lensId || source?.activeLensId || '');
+  const clientContext = resolveClientContextForRequest(source, { lensId });
+  if (clientContext?.calendarHint) context.push(clientContext.calendarHint);
+  context.push(...(clientContext?.inlineHints || []));
+  context.push(...(clientContext?.storedHints || []));
   context.push(...storedMemoryHints({ lensId, limit: 6 }));
   const transcript = cleanText([
     source?.transcript,
@@ -898,8 +1119,618 @@ function extractDebriefInput(body) {
     transcript: truncate(transcript, 6000),
     capturedItems,
     localCommitments,
+    clientContext,
+    dynamics: buildConversationDynamics(turns, source),
     context: uniqueStrings(context).slice(0, 10)
   };
+}
+
+function normalizeCoachTurns(turnSource) {
+  if (!Array.isArray(turnSource)) return [];
+  return turnSource.map(normalizeCoachTurn).filter(Boolean);
+}
+
+function normalizeCoachTurn(turn) {
+  const text = cleanText(turn?.text || turn?.transcript || turn?.primary || '');
+  if (!text) return null;
+  const speakerLabel = cleanText(turn?.speakerLabel || turn?.speaker || turn?.speakerKind || '');
+  const speakerKind = speakerKindFromCoachSpeaker(turn?.speakerKind || turn?.speaker || turn?.speakerLabel);
+  const atMs = Number.isFinite(turn?.atMs)
+    ? turn.atMs
+    : Number.isFinite(turn?.startedAtMs)
+      ? turn.startedAtMs
+      : Number.isFinite(Date.parse(turn?.startedAt || ''))
+        ? Date.parse(turn.startedAt)
+        : undefined;
+  const endedAtMs = Number.isFinite(turn?.endedAtMs)
+    ? turn.endedAtMs
+    : Number.isFinite(Date.parse(turn?.endedAt || ''))
+      ? Date.parse(turn.endedAt)
+      : undefined;
+  return {
+    speakerKind,
+    speakerLabel,
+    text,
+    ...(Number.isFinite(atMs) ? { atMs } : {}),
+    ...(Number.isFinite(endedAtMs) ? { endedAtMs } : {})
+  };
+}
+
+function speakerKindFromCoachSpeaker(value) {
+  const text = cleanText(value).toLowerCase();
+  if (!text) return 'UNKNOWN';
+  if (['me', 'self', 'owner', 'you', 'therapist', 'clinician', 'coach', 'jonathan'].includes(text)) return 'ME';
+  if (['not_me', 'other', 'them', 'client', 'patient', 'speaker'].includes(text)) return 'NOT_ME';
+  return normalizeSpeakerKind(text);
+}
+
+function resolveClientContextForRequest(body, { lensId = '' } = {}) {
+  const source = isRecord(body?.input) ? body.input : body;
+  if (!isRecord(source)) return null;
+  const explicitContext = normalizeClientContext(source.clientContext || source.clientPrep || source.client);
+  const identity = extractClientIdentity(source, explicitContext);
+  const rosterCandidate = identity.clientId || identity.displayName
+    ? null
+    : pickRosterCandidate(source, { lensId });
+  const clientId = cleanText(identity.clientId || rosterCandidate?.clientId || explicitContext?.clientId || '');
+  const displayName = cleanText(identity.displayName || rosterCandidate?.displayName || explicitContext?.displayName || '');
+  const inlineHints = explicitContext ? clientContextHints(explicitContext) : [];
+  const storedHints = clientId || displayName
+    ? memoryStore.clientHints({ lensId, clientId, displayName, limit: 8 })
+    : [];
+  const calendarHint = rosterCandidate
+    ? `calendar candidate: ${rosterCandidate.displayName} at ${formatRosterTime(rosterCandidate.startsAt)} ${ROSTER_TIME_ZONE}`
+    : '';
+  if (!clientId && !displayName && !inlineHints.length && !storedHints.length && !calendarHint) return null;
+  return {
+    clientId,
+    displayName,
+    source: explicitContext?.source || rosterCandidate?.source || 'request',
+    rosterCandidate: rosterCandidate || null,
+    calendarHint,
+    inlineHints,
+    storedHints,
+    hints: inlineHints.length + storedHints.length + (calendarHint ? 1 : 0)
+  };
+}
+
+function extractClientIdentity(source, explicitContext = null) {
+  const selected = isRecord(source?.selectedClient)
+    ? source.selectedClient
+    : isRecord(source?.clientCandidate)
+      ? source.clientCandidate
+      : {};
+  return {
+    clientId: cleanText(
+      source?.clientId ||
+      source?.client_id ||
+      selected?.clientId ||
+      selected?.client_id ||
+      explicitContext?.clientId ||
+      ''
+    ),
+    displayName: cleanText(
+      source?.clientName ||
+      source?.displayName ||
+      source?.clientDisplayName ||
+      selected?.displayName ||
+      selected?.name ||
+      explicitContext?.displayName ||
+      ''
+    )
+  };
+}
+
+function pickRosterCandidate(source, { lensId = '' } = {}) {
+  const at = normalizeDate(source?.at || source?.now || source?.timestamp) || new Date().toISOString();
+  const rosterDate = normalizeRosterDate(source?.date || source?.rosterDate, at);
+  const dismissed = new Set(
+    [
+      ...(Array.isArray(source?.dismissedClientIds) ? source.dismissedClientIds : []),
+      ...(Array.isArray(source?.dismissedCandidates) ? source.dismissedCandidates.map((item) => item?.clientId || item?.displayName || item) : [])
+    ]
+      .map((item) => cleanText(item).toLowerCase())
+      .filter(Boolean)
+  );
+  const candidates = memoryStore.rosterCandidates({ lensId, date: rosterDate, at, limit: 8 });
+  return candidates.find((candidate) => {
+    const id = cleanText(candidate.clientId).toLowerCase();
+    const name = cleanText(candidate.displayName).toLowerCase();
+    return !dismissed.has(id) && !dismissed.has(name);
+  }) || null;
+}
+
+function normalizeClientContext(body) {
+  const source = isRecord(body?.input) ? body.input : body;
+  if (!isRecord(source)) return null;
+  const client = isRecord(source.client) ? source.client : {};
+  let displayName = cleanText(
+    source.displayName ||
+    source.clientName ||
+    source.name ||
+    source.fullName ||
+    client.displayName ||
+    client.clientName ||
+    client.name ||
+    client.fullName ||
+    source.title ||
+    ''
+  );
+  const summary = truncate(uniqueStrings([
+    ...extractContextStrings(source.summary),
+    ...extractContextStrings(source.prep),
+    ...extractContextStrings(source.sessionPrep),
+    ...extractContextStrings(source.clinicalSummary),
+    ...extractContextStrings(source.notionSummary),
+    ...extractContextStrings(source.presentingContext),
+    ...extractContextStrings(source.contextSummary)
+  ]).join(' '), 1200);
+  const items = normalizeClientContextItems(source);
+  let clientId = cleanText(source.clientId || source.client_id || source.id || client.clientId || client.id || '');
+  if (!clientId && displayName) clientId = stableClientId(displayName, summary);
+  if (!displayName && clientId) displayName = clientId;
+  if (!clientId || !displayName || (!summary && !items.length)) return null;
+  return {
+    clientId,
+    lensId: cleanText(source.lensId || source.activeLensId || 'clinical') || 'clinical',
+    displayName: truncate(displayName, 120),
+    source: truncate(cleanText(source.source || source.origin || 'api'), 80),
+    summary,
+    updatedAt: normalizeDate(source.updatedAt || source.updated_at) || new Date().toISOString(),
+    items
+  };
+}
+
+function normalizeClientContextItems(source) {
+  const items = [];
+  const pushItem = (kind, value) => {
+    for (const text of extractContextStrings(value)) {
+      const body = truncate(cleanText(text), 600);
+      const normalizedKind = normalizeItemKind(kind);
+      if (body && normalizedKind) items.push({ kind: normalizedKind, body });
+    }
+  };
+  const rawItems = [
+    ...(Array.isArray(source.items) ? source.items : []),
+    ...(Array.isArray(source.contextItems) ? source.contextItems : []),
+    ...(Array.isArray(source.prepItems) ? source.prepItems : [])
+  ];
+  for (const item of rawItems) {
+    if (isRecord(item)) pushItem(item.kind || item.type || item.label || 'note', item.body || item.text || item.summary || item.value);
+    else pushItem('note', item);
+  }
+  pushItem('best_question', source.bestQuestion);
+  pushItem('best_question', source.bestQuestions);
+  pushItem('best_question', source.questionsToAsk);
+  pushItem('best_question', source.questionCues);
+  pushItem('best_question', source.suggestedQuestions);
+  pushItem('goal', source.goals || source.goal || source.sessionGoal);
+  pushItem('risk', source.risks || source.risk || source.watchFor || source.watch);
+  pushItem('avoid', source.avoid || source.doNotSay || source.forbiddenTopics || source.boundaries);
+  pushItem('value', source.values || source.valuesWork);
+  pushItem('pattern', source.patterns || source.recurringPatterns);
+  pushItem('homework', source.homework || source.nextSteps);
+  pushItem('notion', source.notionUrl || source.notionPage || source.sourceUrl);
+  return uniqueClientItems(items).slice(0, 32);
+}
+
+function normalizeItemKind(value) {
+  const text = cleanText(value || 'note').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return truncate(text || 'note', 40);
+}
+
+function uniqueClientItems(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = `${item.kind}:${item.body}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function clientContextHints(context) {
+  if (!context) return [];
+  return uniqueStrings([
+    context.displayName ? `client name: ${context.displayName}` : '',
+    context.summary ? `client summary: ${context.summary}` : '',
+    ...(context.items || []).map((item) => `client ${item.kind}: ${item.body}`)
+  ]).slice(0, 10);
+}
+
+function normalizeDayRoster(body) {
+  const source = isRecord(body?.input) ? body.input : body;
+  if (!isRecord(source)) return null;
+  const lensId = cleanText(source.lensId || source.activeLensId || 'clinical') || 'clinical';
+  const at = normalizeDate(source.at || source.now || source.timestamp) || new Date().toISOString();
+  const rosterDate = normalizeRosterDate(source.date || source.rosterDate, at);
+  const rawEntries = [
+    ...(Array.isArray(source.entries) ? source.entries : []),
+    ...(Array.isArray(source.appointments) ? source.appointments : []),
+    ...(Array.isArray(source.events) ? source.events : []),
+    ...(Array.isArray(source.items) ? source.items : [])
+  ];
+  const defaultDurationMinutes = Number.isFinite(source.defaultDurationMinutes)
+    ? Math.max(1, Math.min(240, Math.trunc(source.defaultDurationMinutes)))
+    : 50;
+  const entries = rawEntries
+    .map((entry, index) => normalizeRosterEntry(entry, { rosterDate, lensId, index, defaultDurationMinutes, sourceName: source.source }))
+    .filter(Boolean)
+    .slice(0, 64);
+  if (!rosterDate || !entries.length) return null;
+  return {
+    rosterDate,
+    lensId,
+    source: truncate(cleanText(source.source || 'simplepractice-calendar-sync'), 80),
+    replace: source.replace !== false,
+    updatedAt: normalizeDate(source.updatedAt || source.updated_at) || new Date().toISOString(),
+    entries
+  };
+}
+
+function normalizeRosterEntry(entry, { rosterDate, lensId, index, defaultDurationMinutes, sourceName }) {
+  if (!isRecord(entry)) return null;
+  const startValue = entry.startsAt || entry.startAt || entry.startTime || entry.start || entry.when;
+  const endValue = entry.endsAt || entry.endAt || entry.endTime || entry.end;
+  const startsAt = normalizeAppointmentTime(startValue, rosterDate);
+  if (!startsAt) return null;
+  const durationMinutes = Number.isFinite(entry.durationMinutes)
+    ? Math.max(1, Math.min(240, Math.trunc(entry.durationMinutes)))
+    : defaultDurationMinutes;
+  const endsAt = normalizeAppointmentTime(endValue, rosterDate) || new Date(Date.parse(startsAt) + durationMinutes * 60000).toISOString();
+  const displayName = inferClientNameFromEvent(entry);
+  if (!displayName) return null;
+  const clientId = cleanText(entry.clientId || entry.client_id || entry.client?.id || '') || stableClientId(displayName, rosterDate);
+  const eventId = cleanText(entry.eventId || entry.event_id || entry.id || '') || stableClientId(`${displayName}:${startsAt}:${index}`, sourceName || 'calendar');
+  const prep = normalizeClientContext({
+    ...entry,
+    clientId,
+    displayName,
+    lensId,
+    source: cleanText(entry.contextSource || entry.prepSource || sourceName || 'notion-clinical-hud')
+  });
+  return {
+    clientId,
+    displayName: truncate(displayName, 120),
+    startsAt,
+    endsAt,
+    eventId,
+    status: truncate(cleanText(entry.status || 'scheduled'), 40),
+    notes: truncate(cleanText(entry.notes || entry.description || entry.location || ''), 600),
+    clientContext: prep
+  };
+}
+
+function inferClientNameFromEvent(entry) {
+  const explicit = cleanText(
+    entry.displayName ||
+    entry.clientName ||
+    entry.name ||
+    entry.client?.displayName ||
+    entry.client?.name ||
+    ''
+  );
+  if (explicit) return explicit;
+  const title = cleanText(entry.title || entry.summary || entry.subject || '');
+  if (!title) return '';
+  return title
+    .replace(/\b(?:SimplePractice|Appointment|Telehealth|Video|Session|Client)\b/gi, ' ')
+    .replace(/\s+[-|]\s*(?:SimplePractice|Telehealth|Video).*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeAppointmentTime(value, rosterDate) {
+  const raw = isRecord(value)
+    ? value.dateTime || value.datetime || value.iso || value.date || value.value
+    : value;
+  if (Number.isFinite(raw)) return new Date(raw).toISOString();
+  const text = cleanText(raw);
+  if (!text) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return zonedLocalToIso(text, '00:00:00');
+  const dateTime = text.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{1,2}:\d{2}(?::\d{2})?)(?!.*(?:Z|[+-]\d{2}:?\d{2})$)/i);
+  if (dateTime) return zonedLocalToIso(dateTime[1], normalizeTimePart(dateTime[2]));
+  const timeOnly = parseSimpleLocalTime(text);
+  if (timeOnly && rosterDate) return zonedLocalToIso(rosterDate, timeOnly);
+  const normalized = normalizeDate(text);
+  return normalized || '';
+}
+
+function parseSimpleLocalTime(value) {
+  const match = cleanText(value).match(/^(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?$/i);
+  if (!match) return '';
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const suffix = cleanText(match[3]).toLowerCase();
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute > 59) return '';
+  if (suffix.startsWith('p') && hour < 12) hour += 12;
+  if (suffix.startsWith('a') && hour === 12) hour = 0;
+  if (hour > 23) return '';
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+}
+
+function normalizeTimePart(value) {
+  const [hour = '0', minute = '0', second = '0'] = cleanText(value).split(':');
+  return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:${second.padStart(2, '0')}`;
+}
+
+function normalizeRosterDate(value, fallbackAt = '') {
+  const text = cleanText(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = normalizeDate(text) || normalizeDate(fallbackAt) || new Date().toISOString();
+  return dateInRosterTimeZone(parsed);
+}
+
+function dateInRosterTimeZone(value) {
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  const safeDate = Number.isFinite(date.getTime()) ? date : new Date();
+  const parts = zonedParts(safeDate, ROSTER_TIME_ZONE);
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+}
+
+function zonedLocalToIso(datePart, timePart) {
+  const dateMatch = cleanText(datePart).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const timeMatch = cleanText(timePart).match(/^(\d{2}):(\d{2}):(\d{2})$/);
+  if (!dateMatch || !timeMatch) return '';
+  const target = {
+    year: Number(dateMatch[1]),
+    month: Number(dateMatch[2]),
+    day: Number(dateMatch[3]),
+    hour: Number(timeMatch[1]),
+    minute: Number(timeMatch[2]),
+    second: Number(timeMatch[3])
+  };
+  let utcMs = Date.UTC(target.year, target.month - 1, target.day, target.hour, target.minute, target.second);
+  for (let index = 0; index < 3; index += 1) {
+    const actual = zonedParts(new Date(utcMs), ROSTER_TIME_ZONE);
+    const actualAsUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second);
+    const targetAsUtc = Date.UTC(target.year, target.month - 1, target.day, target.hour, target.minute, target.second);
+    utcMs += targetAsUtc - actualAsUtc;
+  }
+  return new Date(utcMs).toISOString();
+}
+
+function zonedParts(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second)
+  };
+}
+
+function formatRosterTime(value) {
+  const date = new Date(value || Date.now());
+  if (!Number.isFinite(date.getTime())) return 'unknown time';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: ROSTER_TIME_ZONE,
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function buildConversationDynamics(turns, body = {}) {
+  const metrics = {
+    clientTalkTime: 0,
+    therapistTalkTime: 0,
+    clientWords: 0,
+    therapistWords: 0,
+    interruptionsByTherapist: 0,
+    longestClientMonologue: 0,
+    currentPauseDuration: 0,
+    clientRatio: 0,
+    therapistRatio: 0,
+    conversationalState: 'unknown'
+  };
+  let lastClient = null;
+  let latest = null;
+  for (const turn of turns || []) {
+    const words = cleanText(turn.text).split(/\s+/).filter(Boolean).length;
+    const duration = estimatedTurnDurationMs(turn, words);
+    if (turn.speakerKind === 'NOT_ME') {
+      metrics.clientTalkTime += duration;
+      metrics.clientWords += words;
+      metrics.longestClientMonologue = Math.max(metrics.longestClientMonologue, duration);
+      lastClient = turn;
+    } else if (turn.speakerKind === 'ME') {
+      metrics.therapistTalkTime += duration;
+      metrics.therapistWords += words;
+      if (lastClient && Number.isFinite(turn.atMs) && Number.isFinite(lastClient.endedAtMs) && turn.atMs - lastClient.endedAtMs < 500) {
+        metrics.interruptionsByTherapist += 1;
+      }
+    }
+    latest = turn;
+  }
+  const total = metrics.clientTalkTime + metrics.therapistTalkTime;
+  if (total > 0) {
+    metrics.clientRatio = Math.round((metrics.clientTalkTime / total) * 100);
+    metrics.therapistRatio = 100 - metrics.clientRatio;
+  }
+  const nowMs = Number.isFinite(body?.nowMs)
+    ? body.nowMs
+    : Number.isFinite(Date.parse(body?.now || body?.timestamp || ''))
+      ? Date.parse(body.now || body.timestamp)
+      : Date.now();
+  if (latest && Number.isFinite(latest.endedAtMs)) metrics.currentPauseDuration = Math.max(0, nowMs - latest.endedAtMs);
+  if (metrics.currentPauseDuration > 2500 || body?.vad_state?.is_speaking === false) {
+    metrics.conversationalState = 'pause';
+  } else if (latest?.speakerKind === 'NOT_ME') {
+    metrics.conversationalState = 'client_speaking';
+  } else if (latest?.speakerKind === 'ME') {
+    metrics.conversationalState = 'therapist_speaking';
+  }
+  return metrics;
+}
+
+function estimatedTurnDurationMs(turn, words) {
+  if (Number.isFinite(turn?.atMs) && Number.isFinite(turn?.endedAtMs) && turn.endedAtMs >= turn.atMs) {
+    return Math.max(300, turn.endedAtMs - turn.atMs);
+  }
+  return Math.max(300, words * 360);
+}
+
+function buildQuestionCue(context) {
+  const ttlMs = 12000;
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  const directQuestion = findClientQuestionHint(context.memory);
+  if (directQuestion) {
+    return cuePayload({
+      source: 'client_context',
+      teaser: context.clientContext?.displayName ? `Ask ${context.clientContext.displayName}` : 'Use client prep',
+      explanation: 'Use the stored client prep before adding a new direction.',
+      question: directQuestion,
+      reason: 'best_question from client prep',
+      modality: 'prep',
+      ttlMs,
+      expiresAt
+    });
+  }
+  const dynamics = context.dynamics || {};
+  if (dynamics.interruptionsByTherapist >= 2 || dynamics.therapistRatio > 48) {
+    return cuePayload({
+      source: 'dynamics',
+      teaser: 'Repair before steering.',
+      explanation: 'You have been carrying more of the talk. Reflect first, then ask one open question.',
+      question: 'Before I steer this, what feels most important in what you just said?',
+      reason: 'high therapist talk share or interruption pattern',
+      modality: 'repair',
+      ttlMs,
+      expiresAt
+    });
+  }
+  if (dynamics.conversationalState === 'pause') {
+    return cuePayload({
+      source: 'dynamics',
+      teaser: 'Use the pause.',
+      explanation: 'Let the silence work, then ask a focused question if the pause holds.',
+      question: 'What are you noticing right now as we sit with that?',
+      reason: 'pause detected',
+      modality: 'presence',
+      ttlMs,
+      expiresAt
+    });
+  }
+  const topic = summarizeQuestion(context.transcript || context.memory.join(' '));
+  const sceneQuestion = findSceneQuestion(context.memory, topic);
+  return cuePayload({
+    source: sceneQuestion.source,
+    teaser: sceneQuestion.source === 'generic' ? 'Ask one sharper question.' : 'Tie it to the scene.',
+    explanation: sceneQuestion.explanation,
+    question: sceneQuestion.question,
+    reason: sceneQuestion.reason,
+    modality: sceneQuestion.modality,
+    ttlMs,
+    expiresAt
+  });
+}
+
+function cuePayload({ source, teaser, explanation, question, reason, modality, ttlMs, expiresAt }) {
+  const text = truncate(cleanText(question), 110);
+  return {
+    source,
+    ttlMs,
+    expiresAt,
+    deliveryAction: 'cue',
+    nudge: {
+      teaser: truncate(cleanText(teaser), 64),
+      explanation: truncate(cleanText(explanation), 180)
+    },
+    questions: [
+      {
+        text,
+        reason: truncate(cleanText(reason), 160),
+        source,
+        modality: truncate(cleanText(modality || 'question'), 40),
+        priority: source === 'client_context' ? 1 : source === 'dynamics' ? 2 : 3
+      }
+    ]
+  };
+}
+
+function findClientQuestionHint(memory) {
+  for (const item of memory || []) {
+    const text = cleanText(item);
+    const labeled = text.match(/^client\s+(?:best_question|suggested_question|questions_to_ask|question_cues?|question_focus|question):\s*(.+)$/i);
+    const candidate = cleanText(labeled?.[1] || '');
+    if (candidate) return ensureQuestion(candidate);
+  }
+  return '';
+}
+
+function findSceneQuestion(memory, topic) {
+  const contextText = (memory || []).join(' ');
+  const risk = firstLabeledHint(memory, /^(?:client\s+)?(?:risk|avoid|boundary|boundaries):\s*(.+)$/i);
+  if (risk) {
+    return {
+      source: 'scene_context',
+      explanation: 'The prep names a risk or boundary. Ask around it before offering advice.',
+      question: ensureQuestion(`What would help us stay clear of ${summarizeQuestion(risk)} right now`),
+      reason: 'risk or boundary in prep',
+      modality: 'boundary'
+    };
+  }
+  if (/\bgoal|outcome|priority|decision\b/i.test(contextText)) {
+    return {
+      source: 'scene_context',
+      explanation: 'Use the pre-session goal to narrow the next move.',
+      question: ensureQuestion(`What would make ${topic} feel useful by the end of this conversation`),
+      reason: 'scene goal available',
+      modality: 'goal'
+    };
+  }
+  return {
+    source: 'generic',
+    explanation: `Ask one concrete follow-up that narrows ${topic}.`,
+    question: ensureQuestion(`What matters most about ${topic} right now`),
+    reason: 'generic follow-up',
+    modality: 'clarify'
+  };
+}
+
+function firstLabeledHint(memory, pattern) {
+  for (const item of memory || []) {
+    const match = cleanText(item).match(pattern);
+    if (match?.[1]) return cleanText(match[1]);
+  }
+  return '';
+}
+
+function ensureQuestion(value) {
+  const text = cleanText(value).replace(/[.!\s]+$/, '');
+  return text.endsWith('?') ? text : `${text}?`;
+}
+
+function summarizeClientContextUse(context) {
+  const client = context?.clientContext;
+  if (!client) return { used: false, hints: 0 };
+  return {
+    used: client.hints > 0 || Boolean(client.clientId || client.displayName),
+    clientId: client.clientId || '',
+    displayName: client.displayName || '',
+    source: client.source || '',
+    hints: client.hints || 0,
+    rosterMatched: Boolean(client.rosterCandidate)
+  };
+}
+
+function stableClientId(...parts) {
+  const raw = cleanText(parts.filter(Boolean).join(':')) || 'client';
+  return `client-${crypto.createHash('sha256').update(raw.toLowerCase()).digest('hex').slice(0, 16)}`;
 }
 
 function normalizeMemorySession(body) {
@@ -991,10 +1822,12 @@ function extractOpenAIText(data) {
 
 function deterministicPages({ question, intent, settings, context }) {
   const topic = summarizeQuestion(question);
+  const clientQuestion = findClientQuestionHint(context.memory);
   if (intent === 'summary') {
     return splitPages(`Recap: ${topic}. Name the decision, owner, next step, and one risk before moving on.`, settings);
   }
   if (intent === 'followUp') {
+    if (clientQuestion) return [`Ask: "${clientQuestion}"`];
     return [`Ask: "What constraint matters most for ${topic}?"`];
   }
   if (intent === 'script') {
@@ -1039,19 +1872,28 @@ function extractContext(input) {
   for (const value of [
     input.activeBriefLabel,
     input.activeContextSummary,
+    input.clientContext,
+    input.client,
+    input.clientCandidate,
     ...(Array.isArray(input.retrievedMemorySnippets) ? input.retrievedMemorySnippets : []),
     ...(Array.isArray(input.recentSessionContext) ? input.recentSessionContext : [])
   ]) {
-    const text = typeof value === 'string' ? cleanText(value) : cleanText(value?.text || value?.summary || '');
-    if (text) memory.push(truncate(text, 240));
+    for (const text of extractContextStrings(value)) {
+      if (text) memory.push(truncate(text, 240));
+    }
   }
   const lens = cleanText(input.lensId || input.activeLensId || '');
+  const clientContext = resolveClientContextForRequest(input, { lensId: lens });
+  if (clientContext?.calendarHint) memory.push(clientContext.calendarHint);
+  memory.push(...(clientContext?.inlineHints || []));
+  memory.push(...(clientContext?.storedHints || []));
   for (const text of storedMemoryHints({ lensId: lens, limit: 4 })) {
     memory.push(truncate(text, 240));
   }
   return {
     lens,
     brief: cleanText(input.activeBriefLabel || ''),
+    clientContext,
     memory: uniqueStrings(memory).slice(0, 8)
   };
 }
