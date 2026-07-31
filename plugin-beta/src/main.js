@@ -2,7 +2,6 @@ import {
   AudioInputSource,
   CreateStartUpPageContainer,
   OsEventTypeList,
-  RebuildPageContainer,
   TextContainerProperty,
   TextContainerUpgrade,
   waitForEvenAppBridge,
@@ -10,7 +9,7 @@ import {
 import './style.css';
 import { formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
 
-const VERSION = '0.1.50';
+const VERSION = '0.1.51';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';
@@ -53,8 +52,6 @@ const HUD_ZONES = {
   },
 };
 const HUD_ZONE_ORDER = ['far', 'mid', 'near'];
-const FOCUS_BORDER_COLOR = 13;
-const FOCUS_BORDER_WIDTH = 2;
 const CUE_TTL_MS = 6500;
 const COACH_MIN_CHARS = 38;
 const COACH_INTERVAL_MS = 9000;
@@ -106,8 +103,6 @@ const state = {
   lastHudZones: {},
   renderInFlight: false,
   renderQueued: false,
-  focusedHudZone: 'mid',
-  structuralHudUpdates: true,
 };
 
 const logLines = [];
@@ -238,53 +233,28 @@ function validToken(value) {
 
 async function createStartupPage() {
   const zones = normalizeHudZoneContent(formatHudZones(state));
-  const focusedZone = getFocusedHudZone(Date.now());
   const result = await state.bridge.createStartUpPageContainer(new CreateStartUpPageContainer({
     containerTotalNum: HUD_ZONE_ORDER.length,
-    textObject: HUD_ZONE_ORDER.map((zone) => buildHudContainer(zone, zones[zone], focusedZone)),
+    textObject: HUD_ZONE_ORDER.map((zone) => buildHudContainer(zone, zones[zone])),
   }));
-  state.startupCreated = result === 0;
+  state.startupCreated = result === 0 || result === true;
   state.lastHudZones = zones;
-  state.focusedHudZone = focusedZone;
   log('createStartUpPageContainer result', { result });
   if (!state.startupCreated) throw new Error(`G2 page create failed: ${result}`);
 }
 
-function buildHudContainer(zone, content, focusedZone = state.focusedHudZone) {
+function buildHudContainer(zone, content) {
   const spec = HUD_ZONES[zone];
-  const isFocused = zone === focusedZone && state.structuralHudUpdates;
   return new TextContainerProperty({
     ...spec,
-    borderWidth: isFocused ? FOCUS_BORDER_WIDTH : 1,
-    borderColor: isFocused ? FOCUS_BORDER_COLOR : spec.borderColor,
-    borderRadius: 4,
-    borderRdaius: '4',
+    borderWidth: 1,
+    borderColor: spec.borderColor,
     content: content || ' ',
   });
 }
 
 function normalizeHudZoneContent(zones) {
   return Object.fromEntries(HUD_ZONE_ORDER.map((zone) => [zone, zones[zone] || ' ']));
-}
-
-function getFocusedHudZone(now = Date.now()) {
-  return state.cue && now < state.cueExpiresAt ? 'near' : 'mid';
-}
-
-async function rebuildHudPage(zones, focusedZone) {
-  if (!state.structuralHudUpdates) return false;
-  try {
-    const result = await state.bridge.rebuildPageContainer(new RebuildPageContainer({
-      containerTotalNum: HUD_ZONE_ORDER.length,
-      textObject: HUD_ZONE_ORDER.map((zone) => buildHudContainer(zone, zones[zone], focusedZone)),
-    }));
-    if (result === true || result === 0) return true;
-    log('hud rebuild unavailable', { result });
-  } catch (error) {
-    log('hud rebuild failed', { error: String(error?.message || error) });
-  }
-  state.structuralHudUpdates = false;
-  return false;
 }
 
 function handleEvenHubEvent(event) {
@@ -783,12 +753,6 @@ async function renderGlasses() {
       state.renderQueued = false;
       const now = Date.now();
       const zones = normalizeHudZoneContent(formatHudZones(state, now));
-      const focusedZone = getFocusedHudZone(now);
-      if (focusedZone !== state.focusedHudZone && await rebuildHudPage(zones, focusedZone)) {
-        state.lastHudZones = zones;
-        state.focusedHudZone = focusedZone;
-        continue;
-      }
       for (const zone of HUD_ZONE_ORDER) {
         const content = zones[zone];
         if (content === state.lastHudZones[zone]) continue;
@@ -801,7 +765,6 @@ async function renderGlasses() {
         }));
       }
       state.lastHudZones = zones;
-      state.focusedHudZone = focusedZone;
     } while (state.renderQueued);
   } finally {
     state.renderInFlight = false;

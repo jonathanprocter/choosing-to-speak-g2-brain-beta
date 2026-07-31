@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { formatHud, formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
 
 const baseState = {
-  version: '0.1.50',
+  version: '0.1.51',
   live: false,
   token: 'vs_live_testtoken000000000000000000000000',
   client: null,
