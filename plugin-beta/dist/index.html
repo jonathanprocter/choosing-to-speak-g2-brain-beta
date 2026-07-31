@@ -26,8 +26,26 @@
         }
       }());
 	    </script>
-	    <script type="module" crossorigin src="/assets/index-choosingToSpeak-c173a7d2.js"></script>
+    <script type="module" crossorigin src="/assets/index-choosingToSpeak-c173a7d2.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-KhSxZnfu.css">
+    <style>
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        touch-action: manipulation;
+        -webkit-text-size-adjust: 100%;
+        overscroll-behavior: none;
+      }
+
+      button,
+      a[href],
+      [role="button"],
+      [role="tab"] {
+        touch-action: manipulation;
+        pointer-events: auto;
+      }
+    </style>
     <meta name="velvetspeak-beta-release-contract" content="velvetspeak.beta-release-contract.v1;releaseMode=portal-key;clientAuthMode=disabled;consentMode=required;consentVersion=4">
     <meta name="velvetspeak-language-selection" content="velvetspeak.language-selection.v1;languageSelection=enabled">
   </head>
@@ -83,36 +101,49 @@
             ? target.closest('button:not([disabled]), a[href], [role="button"], [role="tab"]')
             : null;
         }
-        document.addEventListener("touchstart", function (event) {
+        function eventPoint(event) {
           var touch = event.changedTouches && event.changedTouches[0];
-          start = touch ? { x: touch.clientX, y: touch.clientY } : null;
+          if (touch) return { x: touch.clientX, y: touch.clientY };
+          if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+            return { x: event.clientX, y: event.clientY };
+          }
+          return null;
+        }
+        function actionFromEvent(event) {
+          var point = eventPoint(event);
+          var pointTarget = point && document.elementFromPoint
+            ? document.elementFromPoint(point.x, point.y)
+            : null;
+          return closestAction(pointTarget) || closestAction(event.target);
+        }
+        var lastSyntheticClickAt = 0;
+        function activate(action) {
+          var now = Date.now();
+          if (now - lastSyntheticClickAt < 250) return;
+          lastSyntheticClickAt = now;
+          action.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        }
+        document.addEventListener("touchstart", function (event) {
+          start = eventPoint(event);
         }, true);
         document.addEventListener("touchend", function (event) {
-          var touch = event.changedTouches && event.changedTouches[0];
-          if (!touch || !start) return;
-          if (Math.abs(touch.clientX - start.x) > 12 || Math.abs(touch.clientY - start.y) > 12) return;
+          var point = eventPoint(event);
+          if (!point || !start) return;
+          if (Math.abs(point.x - start.x) > 12 || Math.abs(point.y - start.y) > 12) return;
           var target = event.target;
           if (target && target.closest && target.closest("input, select, textarea, label")) return;
-          var action = closestAction(target);
+          var action = actionFromEvent(event);
           if (!action) return;
           event.preventDefault();
           event.stopPropagation();
-          window.setTimeout(function () {
-            action.click();
-          }, 0);
+          window.setTimeout(function () { activate(action); }, 0);
         }, true);
-        var attempts = 0;
-        function autoStartLive() {
-          if (document.querySelector(".live-session-screen")) return;
-          var button = document.querySelector(".live-start-button");
-          if (button && !button.disabled && /start live/i.test(button.textContent || "")) {
-            button.click();
-            return;
-          }
-          attempts += 1;
-          if (attempts < 8) window.setTimeout(autoStartLive, 900);
-        }
-        window.setTimeout(autoStartLive, 1800);
+        document.addEventListener("pointerup", function (event) {
+          if (event.pointerType && event.pointerType !== "touch") return;
+          var action = actionFromEvent(event);
+          if (!action) return;
+          window.setTimeout(function () { activate(action); }, 0);
+        }, true);
       }());
     </script>
     <script>

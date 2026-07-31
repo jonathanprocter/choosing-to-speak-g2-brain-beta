@@ -2,7 +2,7 @@
   "package_id": "cc.procterai.choosingtospeak",
   "edition": "202601",
   "name": "Choosing to Speak",
-  "version": "0.1.36",
+  "version": "0.1.39",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.11",
   "entrypoint": "index.html",
@@ -16,9 +16,7 @@
         "https://choosing-to-speak-brain.onrender.com",
         "wss://choosing-to-speak-brain.onrender.com",
         "https://speak.procterai.cc",
-        "wss://speak.procterai.cc",
-        "http://127.0.0.1:8788",
-        "ws://127.0.0.1:8788"
+        "wss://speak.procterai.cc"
       ]
     },
     {
