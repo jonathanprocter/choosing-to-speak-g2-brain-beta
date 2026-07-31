@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { formatHud, normalizeDynamics } from './hudFormat.js';
+
+const baseState = {
+  version: '0.1.47',
+  live: false,
+  token: 'vs_live_testtoken000000000000000000000000',
+  client: null,
+  contextHints: [],
+  dynamics: {},
+  cue: null,
+  cueExpiresAt: 0,
+  transcript: '',
+  audioFrames: 0,
+};
+
+test('live transcript is the default active plane when no cue is visible', () => {
+  const text = formatHud({
+    ...baseState,
+    live: true,
+    transcript: 'The client is describing a difficult conversation with their partner and naming a need for more space.',
+  }, Date.parse('2026-07-31T16:00:00-04:00'));
+
+  assert.match(text, /TRANSCRIPT/);
+  assert.match(text, /difficult\s+conversation/);
+  assert.match(text, /Counselor cues appear automatically/);
+});
+
+test('foreground counselor cue overrides the top of the HUD and still keeps transcript context', () => {
+  const now = Date.parse('2026-07-31T16:00:00-04:00');
+  const text = formatHud({
+    ...baseState,
+    live: true,
+    cue: {
+      title: 'Repair before steering',
+      detail: 'Reflect first, then ask one open question tied to the session goal.',
+      plane: 'near',
+      source: 'dynamics',
+    },
+    cueExpiresAt: now + 6000,
+    transcript: 'I want to fix this quickly but I can tell I am moving faster than the client.',
+  }, now);
+
+  assert.match(text, /\*\*\* COUNSELOR CUE - CLOSE 6S \*\*\*/);
+  assert.match(text, /REPAIR BEFORE STEERING/);
+  assert.match(text, /Reflect first/);
+  assert.match(text, /TRANSCRIPT/);
+  assert.ok(text.length <= 900);
+});
+
+test('prep context appears before recording starts', () => {
+  const text = formatHud({
+    ...baseState,
+    client: { displayName: 'Demo Client', startsAt: '2026-07-31T18:00:00Z' },
+    contextHints: ['client question: What would make this week feel one degree more workable?'],
+  }, Date.parse('2026-07-31T16:00:00-04:00'));
+
+  assert.match(text, /READY/);
+  assert.match(text, /Today: Demo Client/);
+  assert.match(text, /TRANSCRIPT DEFAULT: ON/);
+  assert.match(text, /client question/);
+});
+
+test('dynamics normalize safely merges partial updates', () => {
+  assert.deepEqual(
+    normalizeDynamics({ clientRatio: '71', conversationalState: 'client_speaking' }, { therapistRatio: 29 }),
+    { therapistRatio: 29, clientRatio: 71, conversationalState: 'client_speaking' }
+  );
+});

@@ -86,6 +86,12 @@ pre {
   white-space: pre-wrap;
 }
 
+.roster {
+  min-height: 0;
+  margin-top: 16px;
+  color: #d7eee4;
+}
+
 @media (max-width: 640px) {
   .hero {
     display: block;
