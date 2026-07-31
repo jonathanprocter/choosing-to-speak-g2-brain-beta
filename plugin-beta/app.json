@@ -2,7 +2,7 @@
   "package_id": "cc.procterai.choosingtospeak",
   "edition": "202601",
   "name": "Choosing to Speak",
-  "version": "0.1.44",
+  "version": "0.1.45",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.12",
   "entrypoint": "index.html",
@@ -10,10 +10,7 @@
     {
       "name": "network",
       "desc": "Sends live transcript audio to the Choosing to Speak beta backend.",
-      "whitelist": [
-        "https://speak.procterai.cc",
-        "wss://speak.procterai.cc"
-      ]
+      "whitelist": ["https://speak.procterai.cc"]
     },
     {
       "name": "g2-microphone",
