@@ -12,7 +12,8 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.6';
+const VERSION = '0.1.7';
+const BETA_ENROLLMENT_MODE = (env.BETA_ENROLLMENT_MODE || 'open').toLowerCase() === 'closed' ? 'closed' : 'open';
 const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
 const MEMORY_DB_PATH = env.MEMORY_DB_PATH || env.SQLITE_DB_PATH || new URL('../data/choosing-to-speak-memory.sqlite', import.meta.url).pathname;
 const MEMORY_MAX_SESSIONS = env.MEMORY_MAX_SESSIONS || 500;
@@ -125,6 +126,11 @@ async function handleHttp(req, res) {
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/v1/beta_bootstrap') {
+    await handleBetaBootstrap(req, res);
+    return;
+  }
+
   if (!isAuthorized(req)) {
     sendJson(res, 401, {
       ok: false,
@@ -219,8 +225,10 @@ function healthPayload() {
       memorySessions: `${PUBLIC_BASE_URL}/v1/memory/sessions`,
       clientContext: `${PUBLIC_BASE_URL}/v1/client_context`,
       dayRoster: `${PUBLIC_BASE_URL}/v1/day_roster`,
-      clientCandidate: `${PUBLIC_BASE_URL}/v1/client_candidate`
+      clientCandidate: `${PUBLIC_BASE_URL}/v1/client_candidate`,
+      betaBootstrap: `${PUBLIC_BASE_URL}/v1/beta_bootstrap`
     },
+    betaEnrollment: { mode: BETA_ENROLLMENT_MODE },
     voiceLock: {
       enabled: false,
       message: 'VoiceLock is intentionally not part of this beta backend.'
@@ -2179,10 +2187,67 @@ function isRecord(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
 }
 
+async function handleBetaBootstrap(req, res) {
+  const body = await readJson(req);
+  const deviceId = cleanText(body?.deviceId || '').slice(0, 128);
+  const packageId = cleanText(body?.packageId || '').slice(0, 128);
+  if (!deviceId || deviceId.length < 6) {
+    sendJson(res, 400, {
+      ok: false,
+      error: { code: 'BAD_REQUEST', message: 'deviceId (>= 6 chars) is required.' }
+    });
+    return;
+  }
+  if (BETA_ENROLLMENT_MODE === 'closed') {
+    const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    const alreadyEnrolled = bearer && (bearer === BETA_TOKEN || isEnrolledToken(bearer));
+    if (!alreadyEnrolled) {
+      sendJson(res, 403, {
+        ok: false,
+        error: { code: 'ENROLLMENT_CLOSED', message: 'Beta enrollment is closed on this backend.' }
+      });
+      return;
+    }
+  }
+  const minted = `vs_live_${crypto.randomBytes(20).toString('hex')}`;
+  const result = memoryStore.enrollBetaKey({
+    token: minted,
+    deviceId,
+    packageId,
+    at: new Date().toISOString()
+  });
+  if (!result?.token) {
+    sendJson(res, 500, {
+      ok: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Could not enroll this device.' }
+    });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    token: result.token,
+    created: result.created,
+    keyState: 'ready',
+    enrollment: BETA_ENROLLMENT_MODE
+  });
+}
+
 function isAuthorized(req) {
   if (!BETA_TOKEN) return true;
   const header = req.headers.authorization || '';
-  return header === `Bearer ${BETA_TOKEN}`;
+  if (header === `Bearer ${BETA_TOKEN}`) return true;
+  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  return isEnrolledToken(bearer);
+}
+
+function isEnrolledToken(token) {
+  const value = String(token || '').trim();
+  if (!/^vs_live_[A-Za-z0-9]{32,}$/.test(value)) return false;
+  try {
+    return memoryStore.isBetaKeyValid(value);
+  } catch {
+    return false;
+  }
 }
 
 async function readJson(req) {
@@ -2327,7 +2392,7 @@ function handleWebSocket(req, socket, url) {
         let parsed = null;
         try { parsed = JSON.parse(message); } catch {}
         if (parsed?.type === 'Authenticate') {
-          authed = !BETA_TOKEN || parsed.token === BETA_TOKEN;
+          authed = !BETA_TOKEN || parsed.token === BETA_TOKEN || isEnrolledToken(parsed.token);
           if (authed) sendWs(socket, { type: 'stream.ready' });
           else sendWs(socket, { type: 'stream.error', code: 'unauthorized', message: 'Missing or invalid bearer token.' });
         } else if (parsed?.type === 'CloseStream') {

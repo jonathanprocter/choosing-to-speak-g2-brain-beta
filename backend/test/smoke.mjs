@@ -39,6 +39,37 @@ try {
   assert.equal(streamHintBody.error.code, 'UPGRADE_REQUIRED');
   assert.equal(streamHintBody.stream.authRequired, true);
 
+  const bootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'smoke-device-1', packageId: 'cc.procterai.choosingtospeak' })
+  }).then((res) => res.json());
+  assert.equal(bootstrap.ok, true);
+  assert.equal(bootstrap.created, true);
+  assert.match(bootstrap.token, /^vs_live_[A-Za-z0-9]{32,}$/);
+
+  const bootstrapAgain = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'smoke-device-1' })
+  }).then((res) => res.json());
+  assert.equal(bootstrapAgain.created, false);
+  assert.equal(bootstrapAgain.token, bootstrap.token);
+
+  const enrolledCoach = await fetch(`${base}/v1/coach`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrap.token}` },
+    body: JSON.stringify({ type: 'coach_digest', sessionId: 'enrolled-smoke', lensId: 'clinical', transcript: 'Hello there.' })
+  });
+  assert.equal(enrolledCoach.status, 200);
+
+  const badBootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'x' })
+  });
+  assert.equal(badBootstrap.status, 400);
+
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
     headers,
@@ -297,8 +328,30 @@ try {
   assert.ok((await stat(memoryDbPath)).size > 0);
 
   await stopServer(child);
-  child = startServer({ port, token, memoryDbPath });
+  child = startServer({ port, token, memoryDbPath, extraEnv: { BETA_ENROLLMENT_MODE: 'closed' } });
   await waitForServer(port);
+
+  const persistedEnrolledCoach = await fetch(`${base}/v1/coach`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrap.token}` },
+    body: JSON.stringify({ type: 'coach_digest', sessionId: 'enrolled-restart-smoke', lensId: 'clinical', transcript: 'Still here.' })
+  });
+  assert.equal(persistedEnrolledCoach.status, 200);
+
+  const closedBootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'smoke-device-2' })
+  });
+  assert.equal(closedBootstrap.status, 403);
+
+  const closedRebootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrap.token}` },
+    body: JSON.stringify({ deviceId: 'smoke-device-1' })
+  }).then((res) => res.json());
+  assert.equal(closedRebootstrap.ok, true);
+  assert.equal(closedRebootstrap.token, bootstrap.token);
 
   const persistedCoach = await fetch(`${base}/v1/coach`, {
     method: 'POST',
@@ -351,6 +404,7 @@ try {
   assert.ok(memoryPurgeAll.purged >= 1);
 
   await smokeWebSocketStream({ port, token });
+  await smokeWebSocketStream({ port, token: bootstrap.token });
 
   console.log('Smoke tests passed');
 } finally {
@@ -358,7 +412,7 @@ try {
   await rm(tempRoot, { recursive: true, force: true });
 }
 
-function startServer({ port, token, memoryDbPath }) {
+function startServer({ port, token, memoryDbPath, extraEnv = {} }) {
   return spawn(process.execPath, ['src/server.mjs'], {
     cwd: new URL('..', import.meta.url),
     env: {
@@ -370,7 +424,8 @@ function startServer({ port, token, memoryDbPath }) {
       OPENAI_API_KEY: '',
       MEMORY_DB_PATH: memoryDbPath,
       MEMORY_MAX_SESSIONS: '20',
-      CALENDAR_TIME_ZONE: 'America/New_York'
+      CALENDAR_TIME_ZONE: 'America/New_York',
+      ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });

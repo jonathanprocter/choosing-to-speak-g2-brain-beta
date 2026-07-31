@@ -78,6 +78,18 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
 
     CREATE INDEX IF NOT EXISTS idx_day_roster_date_lens_start
       ON day_roster_entries(roster_date, lens_id, starts_at);
+
+    CREATE TABLE IF NOT EXISTS beta_keys (
+      token TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      package_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      revoked INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_beta_keys_device
+      ON beta_keys(device_id, revoked, created_at DESC);
   `);
 
   const insertSession = db.prepare(`
@@ -98,6 +110,20 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
   const countClientContexts = db.prepare('SELECT COUNT(*) AS count FROM client_contexts');
   const countClientContextItems = db.prepare('SELECT COUNT(*) AS count FROM client_context_items');
   const countRosterEntries = db.prepare('SELECT COUNT(*) AS count FROM day_roster_entries');
+  const countBetaKeys = db.prepare('SELECT COUNT(*) AS count FROM beta_keys WHERE revoked = 0');
+  const betaKeyForDevice = db.prepare(`
+    SELECT token FROM beta_keys
+    WHERE device_id = ? AND revoked = 0
+    ORDER BY datetime(created_at) DESC
+    LIMIT 1
+  `);
+  const betaKeyByToken = db.prepare('SELECT token FROM beta_keys WHERE token = ? AND revoked = 0');
+  const insertBetaKey = db.prepare(`
+    INSERT INTO beta_keys (token, device_id, package_id, created_at, last_seen_at)
+    VALUES (@token, @deviceId, @packageId, @createdAt, @lastSeenAt)
+  `);
+  const touchBetaKey = db.prepare('UPDATE beta_keys SET last_seen_at = ? WHERE token = ?');
+  const revokeBetaKeyByToken = db.prepare('UPDATE beta_keys SET revoked = 1 WHERE token = ?');
   const deleteOldestSessions = db.prepare(`
     DELETE FROM memory_sessions
     WHERE session_id IN (
@@ -345,6 +371,36 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
       }
       return formatClientContextRows(rows, boundedLimit);
     },
+    enrollBetaKey({ token = '', deviceId = '', packageId = '', at = new Date().toISOString() } = {}) {
+      const device = String(deviceId || '').trim();
+      if (!device) return null;
+      const existing = betaKeyForDevice.get(device);
+      if (existing) {
+        touchBetaKey.run(at, existing.token);
+        return { token: existing.token, created: false };
+      }
+      const minted = String(token || '').trim();
+      if (!minted) return null;
+      insertBetaKey.run({
+        token: minted,
+        deviceId: device,
+        packageId: String(packageId || '').trim(),
+        createdAt: at,
+        lastSeenAt: at
+      });
+      return { token: minted, created: true };
+    },
+    isBetaKeyValid(token) {
+      const value = String(token || '').trim();
+      if (!value) return false;
+      const row = betaKeyByToken.get(value);
+      if (!row) return false;
+      touchBetaKey.run(new Date().toISOString(), value);
+      return true;
+    },
+    revokeBetaKey(token) {
+      return revokeBetaKeyByToken.run(String(token || '').trim()).changes;
+    },
     stats() {
       return {
         driver: 'sqlite',
@@ -354,6 +410,7 @@ export function createMemoryStore({ dbPath = ':memory:', maxSessions = 500 } = {
         clients: countClientContexts.get().count,
         clientItems: countClientContextItems.get().count,
         rosterEntries: countRosterEntries.get().count,
+        betaKeys: countBetaKeys.get().count,
         maxSessions: normalizeMaxSessions(maxSessions)
       };
     },

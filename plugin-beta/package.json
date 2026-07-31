@@ -1,11 +1,11 @@
 {
   "name": "choosing-to-speak-g2-plugin",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "pack": "npm run build && evenhub pack app.json dist -o ../../choosing-to-speak-0.1.42-g2-explicit-start.ehpk"
+    "pack": "npm run build && evenhub pack app.json dist -o ../../choosing-to-speak-0.1.43-auto-enroll.ehpk"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "^0.0.11"

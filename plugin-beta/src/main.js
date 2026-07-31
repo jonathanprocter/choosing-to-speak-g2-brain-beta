@@ -8,10 +8,12 @@ import {
 } from '@evenrealities/even_hub_sdk';
 import './style.css';
 
-const VERSION = '0.1.42';
+const VERSION = '0.1.43';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';
+const DEVICE_ID_KEY = 'ctsDeviceId.v1';
+const PACKAGE_ID = 'cc.procterai.choosingtospeak';
 const LENS_ID = 'clinical';
 const MAIN_CONTAINER_ID = 1;
 const MAIN_CONTAINER_NAME = 'main';
@@ -85,12 +87,12 @@ async function boot() {
 
   await hydrateToken();
   await loadClientCandidate();
-  setStatus(state.token ? 'Ready' : 'Key needed');
+  setStatus(state.token ? 'Ready' : 'Offline');
   log('ready for explicit G2/R1 tap');
 }
 
 async function hydrateToken() {
-  const localToken = readBrowserToken();
+  const localToken = readBrowserStorage(TOKEN_KEY);
   let bridgeToken = '';
   try {
     bridgeToken = await state.bridge.getLocalStorage(TOKEN_KEY);
@@ -98,16 +100,76 @@ async function hydrateToken() {
     log('bridge key read unavailable', { error: String(error?.message || error) });
   }
   state.token = validToken(bridgeToken) ? bridgeToken : validToken(localToken) ? localToken : '';
+  if (!state.token) {
+    state.token = await bootstrapToken();
+  }
   state.keyState = state.token ? 'ready' : 'missing';
   log(state.token ? 'saved beta key loaded' : 'no saved beta key found');
 }
 
-function readBrowserToken() {
+// Silent enrollment: mint a device-bound key from the backend so the phone
+// never shows a token screen. Idempotent per device id on the backend side.
+async function bootstrapToken() {
+  const deviceId = await ensureDeviceId();
   try {
-    return window.localStorage.getItem(TOKEN_KEY) || '';
+    const response = await fetch(`${BACKEND_BASE_URL}/v1/beta_bootstrap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId, packageId: PACKAGE_ID }),
+    });
+    if (!response.ok) throw new Error(`beta_bootstrap HTTP ${response.status}`);
+    const result = await response.json();
+    if (!validToken(result.token)) throw new Error('beta_bootstrap returned no usable key');
+    await persistToken(result.token);
+    log(result.created ? 'beta key enrolled' : 'beta key restored from backend');
+    return result.token;
+  } catch (error) {
+    log('beta bootstrap unavailable', { error: String(error?.message || error) });
+    return '';
+  }
+}
+
+async function ensureDeviceId() {
+  let deviceId = readBrowserStorage(DEVICE_ID_KEY);
+  if (!deviceId) {
+    try {
+      deviceId = (await state.bridge.getLocalStorage(DEVICE_ID_KEY)) || '';
+    } catch {}
+  }
+  if (!deviceId) {
+    const random = crypto?.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '')
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+    deviceId = `g2-${random}`;
+  }
+  writeBrowserStorage(DEVICE_ID_KEY, deviceId);
+  try {
+    await state.bridge.setLocalStorage(DEVICE_ID_KEY, deviceId);
+  } catch {}
+  return deviceId;
+}
+
+async function persistToken(token) {
+  writeBrowserStorage(TOKEN_KEY, token);
+  try {
+    await state.bridge.setLocalStorage(TOKEN_KEY, token);
+  } catch (error) {
+    log('bridge key save unavailable', { error: String(error?.message || error) });
+  }
+}
+
+function readBrowserStorage(key) {
+  try {
+    return window.localStorage.getItem(key) || '';
   } catch {
     return '';
   }
+}
+
+function writeBrowserStorage(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {}
 }
 
 function validToken(value) {
@@ -164,7 +226,7 @@ function handleEvenHubEvent(event) {
     }
     startLive('tap').catch((error) => {
       log('start failed', { error: String(error?.message || error) });
-      setCue('START FAILED', 'Check G2 connection and saved beta key.');
+      setCue('START FAILED', 'Check G2 connection and backend reachability.');
       setStatus('Start failed');
     });
   }
@@ -185,7 +247,7 @@ async function startLive(reason) {
         state.transcript = '';
         state.audioFrames = 0;
         state.audioBytes = 0;
-        setCue('MIC TEST MODE', 'No beta key is saved, but G2 mic capture is running.');
+        setCue('MIC TEST MODE', 'Backend unreachable; G2 mic capture is running locally.');
         setStatus('Mic test');
         log('audio started without backend key', { reason });
         return;
@@ -481,8 +543,8 @@ function formatHud() {
   }
 
   if (!state.token) {
-    lines.push('KEY NEEDED');
-    lines.push('Save the beta key once on the phone.');
+    lines.push('OFFLINE MODE');
+    lines.push('Key auto-enrolls when the backend is reachable.');
   } else if (!state.live) {
     lines.push('Transcript will appear here by default.');
     lines.push('Double tap while live stops the mic.');
