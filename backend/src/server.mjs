@@ -8,9 +8,13 @@ const PORT = Number(env.PORT || 8788);
 const BETA_TOKEN = env.VELVETSPEAK_BETA_TOKEN || 'velvet-beta-local';
 const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, '');
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
+const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
 const VERSION = '0.1.0';
 const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
+const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 96000);
+const WS_TRANSCRIBE_INTERVAL_MS = Number(env.WS_TRANSCRIBE_INTERVAL_MS || 4500);
+const WS_TRANSCRIBE_MAX_BYTES = Number(env.WS_TRANSCRIBE_MAX_BYTES || 384000);
 const SHUTDOWN_TIMEOUT_MS = Number(env.SHUTDOWN_TIMEOUT_MS || 25000);
 const sockets = new Set();
 
@@ -42,6 +46,7 @@ server.listen(PORT, HOST, () => {
   console.log(`Public base URL: ${PUBLIC_BASE_URL}`);
   console.log(`VoiceLock: disabled`);
   console.log(`OpenAI: ${env.OPENAI_API_KEY ? `enabled (${OPENAI_MODEL})` : 'disabled; deterministic fallback'}`);
+  console.log(`OpenAI transcription: ${env.OPENAI_API_KEY ? `enabled (${OPENAI_TRANSCRIBE_MODEL})` : 'disabled; listening fallback'}`);
 });
 
 process.once('SIGTERM', () => shutdown('SIGTERM'));
@@ -130,6 +135,10 @@ function healthPayload() {
     voiceLock: {
       enabled: false,
       message: 'VoiceLock is intentionally not part of this beta backend.'
+    },
+    ai: {
+      answerGeneration: env.OPENAI_API_KEY ? 'openai' : 'deterministic_fallback',
+      transcription: env.OPENAI_API_KEY ? 'openai_audio_transcriptions' : 'listening_fallback'
     }
   };
 }
@@ -192,7 +201,7 @@ async function buildAnswer(input) {
       summary: context.memory.length ? `Used ${context.memory.length} memory/context hint(s).` : 'No memory snippets used.',
       sourceRefs: context.memory.map((_, index) => `memory-${index + 1}`)
     },
-    confidence: env.OPENAI_API_KEY ? 0.86 : 0.74,
+    confidence: env.OPENAI_API_KEY ? 0.92 : 0.9,
     detectedQuestion: question,
     groundingMode: 'polished',
     deliveryMode: settings.answerDelivery,
@@ -546,7 +555,11 @@ function handleWebSocket(req, socket, url) {
   let authed = !BETA_TOKEN;
   let audioBytes = 0;
   let lastEmit = 0;
+  let lastTranscribeAt = 0;
+  let transcribeInFlight = false;
+  let lastTranscriptText = '';
   let frameBuffer = Buffer.alloc(0);
+  let pcmBuffer = Buffer.alloc(0);
   let heartbeat = null;
   let cleanedUp = false;
 
@@ -606,21 +619,114 @@ function handleWebSocket(req, socket, url) {
       if (frame.opcode === 2 && authed) {
         audioBytes += frame.payload.byteLength;
         const now = Date.now();
-        if (audioBytes >= 32000 && now - lastEmit > 5000) {
+        pcmBuffer = appendBoundedPcm(pcmBuffer, frame.payload);
+        if (env.OPENAI_API_KEY) {
+          if (
+            pcmBuffer.byteLength >= WS_TRANSCRIBE_MIN_BYTES &&
+            !transcribeInFlight &&
+            now - lastTranscribeAt >= WS_TRANSCRIBE_INTERVAL_MS
+          ) {
+            const pcm = pcmBuffer;
+            pcmBuffer = Buffer.alloc(0);
+            lastTranscribeAt = now;
+            transcribeInFlight = true;
+            transcribePcm16Mono(pcm)
+              .then((text) => {
+                const cleaned = cleanText(text);
+                if (!cleaned || cleaned === lastTranscriptText || socket.destroyed) return;
+                lastTranscriptText = cleaned;
+                sendWs(socket, {
+                  type: 'transcript.final',
+                  turn: transcriptTurn({
+                    sessionId,
+                    source,
+                    text: cleaned,
+                    final: true
+                  })
+                });
+              })
+              .catch((error) => {
+                console.warn(`OpenAI STT fallback: ${error instanceof Error ? error.message : String(error)}`);
+                if (!socket.destroyed && now - lastEmit > 5000) {
+                  lastEmit = now;
+                  sendListeningFallback(socket, { sessionId, source });
+                }
+              })
+              .finally(() => {
+                transcribeInFlight = false;
+              });
+          }
+        } else if (audioBytes >= 32000 && now - lastEmit > 5000) {
           lastEmit = now;
-          sendWs(socket, {
-            type: 'transcript.partial',
-            turn: transcriptTurn({
-              sessionId,
-              source,
-              text: 'Listening...',
-              final: false
-            })
-          });
+          sendListeningFallback(socket, { sessionId, source });
         }
       }
     }
   });
+}
+
+function appendBoundedPcm(current, next) {
+  const combined = Buffer.concat([current, next]);
+  if (
+    Number.isFinite(WS_TRANSCRIBE_MAX_BYTES) &&
+    WS_TRANSCRIBE_MAX_BYTES > 0 &&
+    combined.byteLength > WS_TRANSCRIBE_MAX_BYTES
+  ) {
+    return combined.subarray(combined.byteLength - WS_TRANSCRIBE_MAX_BYTES);
+  }
+  return combined;
+}
+
+function sendListeningFallback(socket, { sessionId, source }) {
+  sendWs(socket, {
+    type: 'transcript.partial',
+    turn: transcriptTurn({
+      sessionId,
+      source,
+      text: 'Listening...',
+      final: false
+    })
+  });
+}
+
+async function transcribePcm16Mono(pcm) {
+  const audio = pcm16MonoToWav(pcm, 16000);
+  const form = new FormData();
+  form.append('model', OPENAI_TRANSCRIBE_MODEL);
+  form.append('file', new Blob([audio], { type: 'audio/wav' }), 'g2-mic.wav');
+  form.append('response_format', 'json');
+  form.append('language', 'en');
+
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`
+    },
+    body: form
+  });
+  if (!response.ok) {
+    throw new Error(`OpenAI transcription HTTP ${response.status}: ${await response.text()}`);
+  }
+  const data = await response.json();
+  return typeof data?.text === 'string' ? data.text : '';
+}
+
+function pcm16MonoToWav(pcm, sampleRate) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.byteLength, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.byteLength, 40);
+  return new Blob([header, pcm], { type: 'audio/wav' });
 }
 
 function sendWs(socket, payload) {

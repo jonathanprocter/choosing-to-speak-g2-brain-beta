@@ -25,6 +25,8 @@ try {
   const health = await fetch(`${base}/v1/health`).then((res) => res.json());
   assert.equal(health.ok, true);
   assert.equal(health.voiceLock.enabled, false);
+  assert.equal(health.ai.answerGeneration, 'deterministic_fallback');
+  assert.equal(health.ai.transcription, 'listening_fallback');
 
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
@@ -45,6 +47,7 @@ try {
   assert.equal(answer.schemaVersion, 'answer.result.v1');
   assert.equal(answer.status, 'success');
   assert.equal(answer.cards.length, 1);
+  assert.equal(answer.confidence, 0.9);
 
   const lines = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
