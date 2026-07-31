@@ -347,7 +347,7 @@ try {
 
   const closedRebootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrap.token}` },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ deviceId: 'smoke-device-1' })
   }).then((res) => res.json());
   assert.equal(closedRebootstrap.ok, true);

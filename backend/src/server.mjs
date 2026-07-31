@@ -2191,6 +2191,7 @@ async function handleBetaBootstrap(req, res) {
   const body = await readJson(req);
   const deviceId = cleanText(body?.deviceId || '').slice(0, 128);
   const packageId = cleanText(body?.packageId || '').slice(0, 128);
+  const enrolledAt = new Date().toISOString();
   if (!deviceId || deviceId.length < 6) {
     sendJson(res, 400, {
       ok: false,
@@ -2199,22 +2200,29 @@ async function handleBetaBootstrap(req, res) {
     return;
   }
   if (BETA_ENROLLMENT_MODE === 'closed') {
-    const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-    const alreadyEnrolled = bearer && (bearer === BETA_TOKEN || isEnrolledToken(bearer));
-    if (!alreadyEnrolled) {
+    const existing = memoryStore.enrollBetaKey({ deviceId, packageId, at: enrolledAt });
+    if (existing?.token) {
+      sendJson(res, 200, {
+        ok: true,
+        token: existing.token,
+        created: false,
+        keyState: 'ready',
+        enrollment: BETA_ENROLLMENT_MODE
+      });
+    } else {
       sendJson(res, 403, {
         ok: false,
         error: { code: 'ENROLLMENT_CLOSED', message: 'Beta enrollment is closed on this backend.' }
       });
-      return;
     }
+    return;
   }
   const minted = `vs_live_${crypto.randomBytes(20).toString('hex')}`;
   const result = memoryStore.enrollBetaKey({
     token: minted,
     deviceId,
     packageId,
-    at: new Date().toISOString()
+    at: enrolledAt
   });
   if (!result?.token) {
     sendJson(res, 500, {
