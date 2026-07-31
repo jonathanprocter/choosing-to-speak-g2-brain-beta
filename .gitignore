@@ -5,6 +5,7 @@
 !.env.example
 node_modules/
 coverage/
+references/
 *.tar
 *.ehpk
 *.apk

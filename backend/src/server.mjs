@@ -11,7 +11,7 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.2';
+const VERSION = '0.1.3';
 const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
 const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
 const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 96000);
@@ -19,6 +19,7 @@ const WS_TRANSCRIBE_INTERVAL_MS = Number(env.WS_TRANSCRIBE_INTERVAL_MS || 4500);
 const WS_TRANSCRIBE_MAX_BYTES = Number(env.WS_TRANSCRIBE_MAX_BYTES || 384000);
 const SHUTDOWN_TIMEOUT_MS = Number(env.SHUTDOWN_TIMEOUT_MS || 25000);
 const sockets = new Set();
+const memorySessions = new Map();
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -80,7 +81,7 @@ async function handleHttp(req, res) {
     return;
   }
 
-  if (req.method !== 'POST') {
+  if (req.method !== 'POST' && req.method !== 'DELETE') {
     sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Route not found.' } });
     return;
   }
@@ -90,6 +91,19 @@ async function handleHttp(req, res) {
       ok: false,
       error: { code: 'UNAUTHORIZED', message: 'Missing or invalid bearer token.' }
     });
+    return;
+  }
+
+  if (req.method === 'DELETE') {
+    if (url.pathname === '/v1/memory') {
+      handleMemoryPurge(res);
+      return;
+    }
+    if (url.pathname.startsWith('/v1/memory/sessions/')) {
+      handleMemorySessionPurge(res, decodeURIComponent(url.pathname.split('/').pop() || ''));
+      return;
+    }
+    sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Route not found.' } });
     return;
   }
 
@@ -109,10 +123,16 @@ async function handleHttp(req, res) {
       await handleCoach(res, body);
       return;
     case '/v1/debrief':
-      handleDebrief(res, body);
+      await handleDebrief(res, body);
       return;
     case '/v1/coach_review':
-      handleCoachReview(res, body);
+      await handleCoachReview(res, body);
+      return;
+    case '/v1/memory/enable':
+      handleMemoryEnable(res);
+      return;
+    case '/v1/memory/sessions':
+      handleMemorySessionUpload(res, body);
       return;
     case '/v1/phone_mic_proof':
       sendJson(res, 200, { proofId: requestId('phone-proof') });
@@ -132,7 +152,10 @@ function healthPayload() {
       liveBrain: `${PUBLIC_BASE_URL}/v1/live_brain`,
       search: `${PUBLIC_BASE_URL}/v1/search`,
       transcribe: `${PUBLIC_BASE_URL}/v1/transcribe`,
-      transcribeStream: `${PUBLIC_BASE_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/v1/transcribe/stream`
+      transcribeStream: `${PUBLIC_BASE_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/v1/transcribe/stream`,
+      debrief: `${PUBLIC_BASE_URL}/v1/debrief`,
+      coachReview: `${PUBLIC_BASE_URL}/v1/coach_review`,
+      memorySessions: `${PUBLIC_BASE_URL}/v1/memory/sessions`
     },
     voiceLock: {
       enabled: false,
@@ -142,7 +165,9 @@ function healthPayload() {
       answerGeneration: env.OPENAI_API_KEY ? 'openai' : 'deterministic_fallback',
       transcription: env.OPENAI_API_KEY ? 'openai_audio_transcriptions' : 'listening_fallback',
       voiceProfile: JONATHAN_VOICE_ENABLED ? 'jonathan_live_response' : 'neutral',
-      coachCueMode: 'contextual_auto_ephemeral'
+      coachCueMode: 'contextual_auto_ephemeral',
+      debrief: env.OPENAI_API_KEY ? 'openai_session_intel' : 'deterministic_session_intel',
+      memorySync: 'in_memory_session_uploads'
     }
   };
 }
@@ -284,40 +309,81 @@ async function handleCoach(res, body) {
   });
 }
 
-function handleDebrief(res, body) {
+async function handleDebrief(res, body) {
+  const started = Date.now();
+  const requestIdValue = body?.requestId || requestId('debrief');
+  const input = extractDebriefInput(body);
+  let debrief = null;
+  if (env.OPENAI_API_KEY) {
+    debrief = await askOpenAIDebrief(input).catch((error) => {
+      console.warn(`OpenAI debrief fallback: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+  }
+  if (!debrief) debrief = deterministicDebrief(input);
+  rememberDebrief(input, debrief);
   sendJson(res, 200, {
     type: 'debrief.result.v1',
-    requestId: body?.requestId || requestId('debrief'),
-    debrief: {
-      goalOutcome: { status: 'no_goal', evidence: 'No explicit goal outcome was provided to the backend.' },
-      lesson: 'Keep the next session focused on one concrete outcome.',
-      commitments: [],
-      moments: []
-    }
+    requestId: requestIdValue,
+    provider: PROVIDER,
+    modelRoute: `${PUBLIC_BASE_URL}/v1/debrief`,
+    latencyMs: Math.max(0, Date.now() - started),
+    debrief
   });
 }
 
-function handleCoachReview(res, body) {
+async function handleCoachReview(res, body) {
+  const started = Date.now();
+  const requestIdValue = body?.requestId || requestId('coach-review');
+  const input = extractDebriefInput(body);
+  let review = null;
+  if (env.OPENAI_API_KEY) {
+    review = await askOpenAICoachReview(input).catch((error) => {
+      console.warn(`OpenAI coach review fallback: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+  }
+  if (!review) review = deterministicCoachReview(input);
   sendJson(res, 200, {
     type: 'coach_review.result.v1',
-    requestId: body?.requestId || requestId('coach-review'),
+    requestId: requestIdValue,
     provider: PROVIDER,
     modelRoute: `${PUBLIC_BASE_URL}/v1/coach_review`,
-    review: {
-      goalOutcome: { status: 'no_goal', evidence: 'No completed session goal was included.' },
-      moments: [],
-      commitments: [],
-      coaching: [
-        {
-          dimension: 'clarity',
-          observation: 'The session did not include enough transcript for a detailed review.',
-          suggestion: 'Capture a longer live segment before requesting a review.'
-        }
-      ],
-      lesson: 'Shorter, direct prompts produce more useful live coaching.',
-      talkShareNote: ''
-    }
+    latencyMs: Math.max(0, Date.now() - started),
+    review
   });
+}
+
+function handleMemoryEnable(res) {
+  sendJson(res, 200, { ok: true, syncEnabled: true, provider: PROVIDER });
+}
+
+function handleMemorySessionUpload(res, body) {
+  const session = normalizeMemorySession(body);
+  if (!session) {
+    sendJson(res, 400, { ok: false, error: { code: 'INVALID_SESSION_MEMORY', message: 'Session memory payload was empty or invalid.' } });
+    return;
+  }
+  memorySessions.set(session.sessionId, session);
+  trimMemorySessions();
+  sendJson(res, 200, {
+    ok: true,
+    status: 'uploaded',
+    sessionId: session.sessionId,
+    storedItems: session.items.length
+  });
+}
+
+function handleMemoryPurge(res) {
+  const purged = memorySessions.size;
+  memorySessions.clear();
+  sendJson(res, 200, { ok: true, purged });
+}
+
+function handleMemorySessionPurge(res, sessionId) {
+  const id = cleanText(sessionId);
+  const purged = id && memorySessions.delete(id) ? 1 : 0;
+  sendJson(res, 200, { ok: true, purged });
 }
 
 async function askOpenAI({ question, intent, settings, context }) {
@@ -398,6 +464,177 @@ async function askOpenAICoach(context) {
   return parsed;
 }
 
+async function askOpenAIDebrief(input) {
+  const prompt = [
+    'You are the Choosing to Speak post-session intelligence engine for smart glasses.',
+    'Summarize the live conversation into durable, future-useful session memory.',
+    'Prefer specifics: commitments, unanswered questions, useful patterns, and the next conversation move.',
+    'Do not invent commitments, names, dates, numbers, or outcomes.',
+    JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
+    'Return JSON only with this shape:',
+    '{"goalOutcome":{"status":"met|partial|missed|no_goal","evidence":"..."},"summary":"...","lesson":"...","commitments":[{"text":"...","ownerKind":"me|other|unknown","due":"optional"}],"moments":[{"kind":"up|down","note":"...","atMs":0}],"talkShareNote":"..."}',
+    'Limits: summary <= 600 chars. lesson <= 220 chars. commitments <= 8. moments <= 2.',
+    input.goal ? `Goal: ${input.goal}` : 'Goal: none',
+    input.context.length ? `Prior/session context:\n${input.context.map((item) => `- ${item}`).join('\n')}` : '',
+    input.capturedItems.length ? `Captured items:\n${input.capturedItems.map((item) => `- ${item.kind}: ${item.text}`).join('\n')}` : '',
+    `Transcript:\n${input.transcript || '(no transcript)'}`
+  ].filter(Boolean).join('\n');
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      input: prompt,
+      max_output_tokens: 700
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI debrief HTTP ${response.status}: ${await response.text()}`);
+  }
+
+  const parsed = parseDebriefJson(extractOpenAIText(await response.json()));
+  if (!parsed) throw new Error('OpenAI returned no debrief JSON.');
+  return parsed;
+}
+
+async function askOpenAICoachReview(input) {
+  const prompt = [
+    'You are reviewing how Choosing to Speak coached a smart-glasses conversation.',
+    'Give a practical review the wearer can use next time. Keep it concise and behavior-specific.',
+    'Do not invent events. If evidence is thin, say so and make the next action small.',
+    JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
+    'Return JSON only with this shape:',
+    '{"goalOutcome":{"status":"met|partial|missed|no_goal","evidence":"..."},"moments":[{"kind":"up|down","note":"...","atMs":0}],"commitments":[{"text":"...","ownerKind":"me|other|unknown","due":"optional"}],"coaching":[{"dimension":"...","observation":"...","suggestion":"..."}],"lesson":"...","talkShareNote":"..."}',
+    'Limits: moments <= 4. commitments <= 12. coaching <= 4. lesson <= 220 chars.',
+    input.goal ? `Goal: ${input.goal}` : 'Goal: none',
+    input.context.length ? `Prior/session context:\n${input.context.map((item) => `- ${item}`).join('\n')}` : '',
+    input.capturedItems.length ? `Captured items:\n${input.capturedItems.map((item) => `- ${item.kind}: ${item.text}`).join('\n')}` : '',
+    `Transcript:\n${input.transcript || '(no transcript)'}`
+  ].filter(Boolean).join('\n');
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      input: prompt,
+      max_output_tokens: 800
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI coach review HTTP ${response.status}: ${await response.text()}`);
+  }
+
+  const parsed = parseCoachReviewJson(extractOpenAIText(await response.json()));
+  if (!parsed) throw new Error('OpenAI returned no coach review JSON.');
+  return parsed;
+}
+
+function parseDebriefJson(text) {
+  const raw = parseJsonObject(text);
+  if (!raw) return null;
+  const summary = truncate(cleanText(raw.summary), 600);
+  const lesson = truncate(cleanText(raw.lesson), 240) || 'Keep the next conversation focused on one concrete next move.';
+  return {
+    goalOutcome: sanitizeGoalOutcome(raw.goalOutcome),
+    summary,
+    lesson,
+    commitments: sanitizeCommitments(raw.commitments, 8),
+    moments: sanitizeMoments(raw.moments, 2),
+    ...(cleanText(raw.talkShareNote) ? { talkShareNote: truncate(cleanText(raw.talkShareNote), 200) } : {})
+  };
+}
+
+function parseCoachReviewJson(text) {
+  const raw = parseJsonObject(text);
+  if (!raw) return null;
+  return {
+    goalOutcome: sanitizeGoalOutcome(raw.goalOutcome),
+    moments: sanitizeMoments(raw.moments, 4),
+    commitments: sanitizeCommitments(raw.commitments, 12),
+    coaching: sanitizeCoaching(raw.coaching),
+    lesson: truncate(cleanText(raw.lesson), 240) || 'Use fewer, sharper cues tied to what the other person just said.',
+    talkShareNote: truncate(cleanText(raw.talkShareNote), 200)
+  };
+}
+
+function parseJsonObject(text) {
+  const trimmed = cleanText(String(text || '').replace(/^```(?:json)?/i, '').replace(/```$/i, ''));
+  const match = trimmed.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeGoalOutcome(value) {
+  const raw = isRecord(value) ? value : {};
+  const allowed = new Set(['met', 'partial', 'missed', 'no_goal']);
+  const status = allowed.has(raw.status) ? raw.status : 'no_goal';
+  return { status, evidence: truncate(cleanText(raw.evidence), 240) };
+}
+
+function sanitizeCommitments(value, max = 8) {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set(['me', 'other', 'unknown']);
+  const seen = new Set();
+  const commitments = [];
+  for (const item of value) {
+    const text = truncate(cleanText(item?.text || item?.primary), 200);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    commitments.push({
+      text,
+      ownerKind: allowed.has(item?.ownerKind) ? item.ownerKind : ownerKindFromText(item?.owner || item?.ownerLabel || ''),
+      ...(cleanText(item?.due) ? { due: truncate(cleanText(item.due), 80) } : {})
+    });
+    if (commitments.length >= max) break;
+  }
+  return commitments;
+}
+
+function sanitizeMoments(value, max = 2) {
+  if (!Array.isArray(value)) return [];
+  const moments = [];
+  for (const item of value) {
+    const note = truncate(cleanText(item?.note || item?.text), 200);
+    if (!note) continue;
+    moments.push({
+      kind: item?.kind === 'down' ? 'down' : 'up',
+      note,
+      ...(Number.isFinite(item?.atMs) ? { atMs: item.atMs } : {}),
+      ...(cleanText(item?.turnRef) ? { turnRef: truncate(cleanText(item.turnRef), 120) } : {})
+    });
+    if (moments.length >= max) break;
+  }
+  return moments;
+}
+
+function sanitizeCoaching(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      dimension: truncate(cleanText(item?.dimension || 'clarity'), 80),
+      observation: truncate(cleanText(item?.observation), 240),
+      suggestion: truncate(cleanText(item?.suggestion), 240)
+    }))
+    .filter((item) => item.dimension && item.observation && item.suggestion)
+    .slice(0, 4);
+}
+
 function parseCoachJson(text) {
   const trimmed = cleanText(String(text || '').replace(/^```(?:json)?/i, '').replace(/```$/i, ''));
   const match = trimmed.match(/\{[\s\S]*\}/);
@@ -438,6 +675,102 @@ function deterministicCoach(context) {
   };
 }
 
+function deterministicDebrief(input) {
+  const topic = summarizeQuestion(input.transcript || input.goal || input.context.join(' '));
+  const commitments = [
+    ...sanitizeCommitments(input.localCommitments, 8),
+    ...inferCommitments(input.transcript)
+  ].slice(0, 8);
+  const talkShareNote = talkShare(input.turns);
+  return {
+    goalOutcome: input.goal
+      ? { status: input.transcript.length > 80 ? 'partial' : 'missed', evidence: truncate(`Session touched the goal: ${input.goal}`, 220) }
+      : { status: 'no_goal', evidence: 'No explicit goal was provided for this session.' },
+    summary: truncate(`Covered ${topic}. The useful follow-up is to turn the strongest thread into one concrete next step and capture any open decision.`, 600),
+    lesson: truncate(`Next time, anchor the scene up front and ask for one concrete example or decision around ${topic}.`, 240),
+    commitments,
+    moments: deterministicMoments(input),
+    ...(talkShareNote ? { talkShareNote } : {})
+  };
+}
+
+function deterministicCoachReview(input) {
+  const debrief = deterministicDebrief(input);
+  const topic = summarizeQuestion(input.transcript || input.goal || input.context.join(' '));
+  return {
+    goalOutcome: debrief.goalOutcome,
+    moments: deterministicMoments(input, 4),
+    commitments: debrief.commitments.slice(0, 12),
+    coaching: [
+      {
+        dimension: 'context',
+        observation: input.context.length
+          ? 'Pre-session context was available and should shape the live cue.'
+          : 'The session had little explicit pre-session context.',
+        suggestion: 'Before starting, set the scene goal, person, and one risk you want cues to watch for.'
+      },
+      {
+        dimension: 'specificity',
+        observation: `The strongest live thread was ${topic}.`,
+        suggestion: 'Ask for one named example, date, owner, or next action when the conversation gets broad.'
+      }
+    ],
+    lesson: debrief.lesson,
+    talkShareNote: debrief.talkShareNote || ''
+  };
+}
+
+function deterministicMoments(input, max = 2) {
+  const moments = [];
+  const otherQuestion = input.turns.find((turn) => turn.speakerKind !== 'ME' && /\?/.test(turn.text));
+  if (otherQuestion) {
+    moments.push({
+      kind: 'up',
+      note: truncate(`Good opportunity to answer or probe: ${otherQuestion.text}`, 200),
+      ...(Number.isFinite(otherQuestion.atMs) ? { atMs: otherQuestion.atMs } : {})
+    });
+  }
+  const vagueTurn = input.turns.find((turn) => /\b(maybe|probably|sort of|kind of|thing|stuff|unclear|not sure)\b/i.test(turn.text));
+  if (vagueTurn) {
+    moments.push({
+      kind: 'down',
+      note: truncate(`Clarify vague wording before moving on: ${vagueTurn.text}`, 200),
+      ...(Number.isFinite(vagueTurn.atMs) ? { atMs: vagueTurn.atMs } : {})
+    });
+  }
+  if (!moments.length) {
+    moments.push({ kind: 'up', note: truncate(`Main thread: ${summarizeQuestion(input.transcript || input.goal || 'the session')}`, 200) });
+  }
+  return moments.slice(0, max);
+}
+
+function inferCommitments(transcript) {
+  const commitments = [];
+  const sentences = cleanText(transcript).split(/(?<=[.!?])\s+/).filter(Boolean);
+  for (const sentence of sentences) {
+    if (!/\b(I will|I'll|we will|we'll|I can|we can|follow up|send|schedule|circle back|next step|action item)\b/i.test(sentence)) {
+      continue;
+    }
+    commitments.push({ text: truncate(sentence, 180), ownerKind: /\b(I will|I'll|I can)\b/i.test(sentence) ? 'me' : 'unknown' });
+    if (commitments.length >= 4) break;
+  }
+  return sanitizeCommitments(commitments, 4);
+}
+
+function talkShare(turns) {
+  let me = 0;
+  let other = 0;
+  for (const turn of turns) {
+    const words = cleanText(turn.text).split(/\s+/).filter(Boolean).length;
+    if (turn.speakerKind === 'ME') me += words;
+    else other += words;
+  }
+  const total = me + other;
+  if (!total) return '';
+  const mePercent = Math.round((me / total) * 100);
+  return `Approximate talk share: you ${mePercent}%, other ${100 - mePercent}%.`;
+}
+
 function extractCoachContext(body) {
   const digest = isRecord(body?.digest) ? body.digest : null;
   const turnSource = Array.isArray(body?.recentTurns)
@@ -475,12 +808,142 @@ function extractCoachContext(body) {
       if (text) memory.push(truncate(text, 240));
     }
   }
+  const lensId = cleanText(body?.lensId || body?.activeLensId || '');
+  for (const text of storedMemoryHints({ lensId, limit: 6 })) {
+    memory.push(truncate(text, 240));
+  }
   return {
     transcript: truncate(transcript, 3000),
-    memory: memory.slice(0, 8),
-    lensId: cleanText(body?.lensId || body?.activeLensId || ''),
+    memory: uniqueStrings(memory).slice(0, 10),
+    lensId,
     sessionLanguage: cleanText(body?.sessionLanguage || '')
   };
+}
+
+function extractDebriefInput(body) {
+  const source = isRecord(body?.input) ? body.input : body;
+  const rawTurns = Array.isArray(source?.turns)
+    ? source.turns
+    : Array.isArray(source?.transcriptTurns)
+      ? source.transcriptTurns
+      : Array.isArray(source?.session?.transcriptTurns)
+        ? source.session.transcriptTurns
+        : [];
+  const turns = rawTurns
+    .map((turn) => {
+      const text = cleanText(turn?.text || turn?.transcript || turn?.primary || '');
+      if (!text) return null;
+      const speakerKind = normalizeSpeakerKind(turn?.speakerKind || turn?.speaker || turn?.speakerLabel);
+      const atMs = Number.isFinite(turn?.atMs)
+        ? turn.atMs
+        : Number.isFinite(turn?.startedAtMs)
+          ? turn.startedAtMs
+          : Number.isFinite(Date.parse(turn?.startedAt || ''))
+            ? Date.parse(turn.startedAt)
+            : undefined;
+      return {
+        speakerKind,
+        speakerLabel: cleanText(turn?.speakerLabel || turn?.speaker || ''),
+        text,
+        ...(Number.isFinite(atMs) ? { atMs } : {})
+      };
+    })
+    .filter(Boolean);
+  const capturedItems = normalizeCapturedItems(source?.capturedItems);
+  const localCommitments = sanitizeCommitments(source?.localCommitments, 12);
+  const context = [];
+  for (const value of [
+    source?.activeBriefLabel,
+    source?.activeContextSummary,
+    source?.context,
+    source?.scene,
+    source?.sessionBlock,
+    source?.currentScene,
+    ...(Array.isArray(source?.memoryContext?.items) ? source.memoryContext.items : []),
+    ...(Array.isArray(source?.retrievedMemorySnippets) ? source.retrievedMemorySnippets : [])
+  ]) {
+    context.push(...extractContextStrings(value).map((item) => truncate(item, 240)));
+  }
+  const lensId = cleanText(source?.lensId || source?.activeLensId || '');
+  context.push(...storedMemoryHints({ lensId, limit: 6 }));
+  const transcript = cleanText([
+    source?.transcript,
+    source?.recentTranscript,
+    turns.map((turn) => `${turn.speakerLabel || turn.speakerKind}: ${turn.text}`).join('\n')
+  ].filter(Boolean).join('\n'));
+  return {
+    sessionId: cleanText(source?.sessionId || source?.id || 'session'),
+    lensId,
+    goal: cleanText(source?.goal || source?.sessionGoal || source?.objective || ''),
+    sessionLanguage: cleanText(source?.sessionLanguage || ''),
+    durationMs: Number.isFinite(source?.durationMs) ? Math.max(0, Math.round(source.durationMs)) : 0,
+    turns,
+    transcript: truncate(transcript, 6000),
+    capturedItems,
+    localCommitments,
+    context: uniqueStrings(context).slice(0, 10)
+  };
+}
+
+function normalizeMemorySession(body) {
+  const sessionId = cleanText(body?.sessionId || body?.id);
+  const lensId = cleanText(body?.lensId || body?.activeLensId || 'default');
+  if (!sessionId || !lensId) return null;
+  const startedAt = normalizeDate(body?.sessionStartedAt || body?.startedAt || body?.createdAt) || new Date().toISOString();
+  const rawItems = Array.isArray(body?.items) ? body.items : [];
+  const items = rawItems
+    .map((item) => ({
+      kind: truncate(cleanText(item?.kind || 'note'), 40),
+      body: truncate(cleanText(item?.body || item?.text || item?.summary || ''), 600)
+    }))
+    .filter((item) => item.kind && item.body)
+    .slice(0, 24);
+  if (!items.length) return null;
+  return {
+    sessionId,
+    lensId,
+    sessionStartedAt: startedAt,
+    uploadedAt: new Date().toISOString(),
+    items
+  };
+}
+
+function rememberDebrief(input, debrief) {
+  if (!input.sessionId || !debrief) return;
+  const items = [
+    debrief.summary ? { kind: 'recap', body: debrief.summary } : null,
+    debrief.lesson ? { kind: 'lesson', body: debrief.lesson } : null,
+    ...(debrief.commitments || []).map((item) => ({ kind: 'commitment', body: `${item.ownerKind === 'me' ? 'You' : item.ownerKind === 'other' ? 'Them' : 'Someone'}: ${item.text}` })),
+    ...(debrief.moments || []).map((item) => ({ kind: 'moment', body: `${item.kind === 'down' ? 'Watch' : 'Useful'}: ${item.note}` }))
+  ].filter(Boolean);
+  const normalized = normalizeMemorySession({
+    sessionId: input.sessionId,
+    lensId: input.lensId || 'default',
+    sessionStartedAt: new Date().toISOString(),
+    items
+  });
+  if (normalized) {
+    memorySessions.set(normalized.sessionId, normalized);
+    trimMemorySessions();
+  }
+}
+
+function storedMemoryHints({ lensId = '', limit = 6 } = {}) {
+  const wanted = cleanText(lensId).toLowerCase();
+  return [...memorySessions.values()]
+    .filter((session) => !wanted || session.lensId.toLowerCase() === wanted || session.lensId === 'default')
+    .sort((a, b) => Date.parse(b.sessionStartedAt) - Date.parse(a.sessionStartedAt))
+    .flatMap((session) => session.items.map((item) => `${item.kind}: ${item.body}`))
+    .slice(0, limit);
+}
+
+function trimMemorySessions() {
+  const maxSessions = 80;
+  if (memorySessions.size <= maxSessions) return;
+  const oldest = [...memorySessions.values()]
+    .sort((a, b) => Date.parse(a.sessionStartedAt) - Date.parse(b.sessionStartedAt))
+    .slice(0, memorySessions.size - maxSessions);
+  for (const session of oldest) memorySessions.delete(session.sessionId);
 }
 
 function extractContextStrings(value, depth = 0) {
@@ -580,10 +1043,14 @@ function extractContext(input) {
     const text = typeof value === 'string' ? cleanText(value) : cleanText(value?.text || value?.summary || '');
     if (text) memory.push(truncate(text, 240));
   }
+  const lens = cleanText(input.lensId || input.activeLensId || '');
+  for (const text of storedMemoryHints({ lensId: lens, limit: 4 })) {
+    memory.push(truncate(text, 240));
+  }
   return {
-    lens: cleanText(input.lensId || input.activeLensId || ''),
+    lens,
     brief: cleanText(input.activeBriefLabel || ''),
-    memory: memory.slice(0, 6)
+    memory: uniqueStrings(memory).slice(0, 8)
   };
 }
 
@@ -628,6 +1095,50 @@ function normalizeLineStyle(value) {
 
 function normalizeMicSource(value) {
   return value === 'phoneMic' || value === 'g2Mic' ? value : 'g2Mic';
+}
+
+function normalizeSpeakerKind(value) {
+  const text = cleanText(value).toUpperCase();
+  if (text === 'ME' || text === 'SELF' || text === 'OWNER' || text === 'YOU') return 'ME';
+  if (text === 'NOT_ME' || text === 'OTHER' || text === 'THEM') return 'NOT_ME';
+  return 'UNKNOWN';
+}
+
+function normalizeCapturedItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      kind: truncate(cleanText(item?.kind || 'note'), 40),
+      text: truncate(cleanText(item?.text || item?.primary || ''), 240),
+      owner: cleanText(item?.owner || item?.ownerLabel || ''),
+      due: cleanText(item?.due || '')
+    }))
+    .filter((item) => item.kind && item.text)
+    .slice(0, 20);
+}
+
+function ownerKindFromText(value) {
+  const text = cleanText(value).toLowerCase();
+  if (!text) return 'unknown';
+  return ['you', 'me', 'i', 'myself', 'self', 'jonathan'].includes(text) ? 'me' : 'other';
+}
+
+function normalizeDate(value) {
+  const time = Date.parse(value || '');
+  return Number.isFinite(time) ? new Date(time).toISOString() : '';
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = cleanText(value);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
 }
 
 function summarizeQuestion(text) {

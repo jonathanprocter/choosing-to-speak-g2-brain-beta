@@ -29,6 +29,8 @@ try {
   assert.equal(health.ai.transcription, 'listening_fallback');
   assert.equal(health.ai.voiceProfile, 'jonathan_live_response');
   assert.equal(health.ai.coachCueMode, 'contextual_auto_ephemeral');
+  assert.equal(health.ai.debrief, 'deterministic_session_intel');
+  assert.equal(health.ai.memorySync, 'in_memory_session_uploads');
 
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
@@ -97,6 +99,71 @@ try {
   assert.ok(coach.nudge);
   assert.equal(typeof coach.nudge.teaser, 'string');
   assert.ok(Array.isArray(coach.sayThis));
+
+  const debrief = await fetch(`${base}/v1/debrief`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      requestId: 'debrief-smoke',
+      sessionId: 'smoke-session',
+      lensId: 'interview',
+      goal: 'Show calm product judgment.',
+      turns: [
+        { speakerKind: 'NOT_ME', text: 'Tell me about a time you handled a hard architecture tradeoff?', atMs: 1000 },
+        { speakerKind: 'ME', text: 'I will follow up with the migration diagram and explain the scope tradeoff.', atMs: 2000 }
+      ],
+      capturedItems: [{ kind: 'action', text: 'Send migration diagram', owner: 'me' }]
+    })
+  }).then((res) => res.json());
+  assert.equal(debrief.type, 'debrief.result.v1');
+  assert.equal(debrief.requestId, 'debrief-smoke');
+  assert.equal(debrief.debrief.goalOutcome.status, 'partial');
+  assert.equal(typeof debrief.debrief.summary, 'string');
+  assert.ok(debrief.debrief.commitments.length >= 1);
+  assert.ok(debrief.debrief.moments.length >= 1);
+
+  const coachReview = await fetch(`${base}/v1/coach_review`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      requestId: 'review-smoke',
+      sessionId: 'smoke-session',
+      lensId: 'interview',
+      goal: 'Show calm product judgment.',
+      turns: [{ speakerKind: 'ME', text: 'I probably need to explain the thing better.', atMs: 3000 }]
+    })
+  }).then((res) => res.json());
+  assert.equal(coachReview.type, 'coach_review.result.v1');
+  assert.equal(coachReview.requestId, 'review-smoke');
+  assert.equal(coachReview.provider, 'choosing-to-speak-brain-backend');
+  assert.ok(Array.isArray(coachReview.review.coaching));
+
+  const memoryEnable = await fetch(`${base}/v1/memory/enable`, {
+    method: 'POST',
+    headers,
+    body: '{}'
+  }).then((res) => res.json());
+  assert.equal(memoryEnable.ok, true);
+  assert.equal(memoryEnable.syncEnabled, true);
+
+  const memoryUpload = await fetch(`${base}/v1/memory/sessions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      sessionId: 'memory-smoke',
+      lensId: 'interview',
+      sessionStartedAt: new Date().toISOString(),
+      items: [{ kind: 'lesson', body: 'Ask for named examples before giving a long answer.' }]
+    })
+  }).then((res) => res.json());
+  assert.equal(memoryUpload.ok, true);
+  assert.equal(memoryUpload.status, 'uploaded');
+
+  const memoryPurge = await fetch(`${base}/v1/memory/sessions/memory-smoke`, {
+    method: 'DELETE',
+    headers
+  }).then((res) => res.json());
+  assert.equal(memoryPurge.ok, true);
 
   await smokeWebSocketStream({ port, token });
 
