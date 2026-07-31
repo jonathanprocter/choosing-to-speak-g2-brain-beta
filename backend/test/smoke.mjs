@@ -26,7 +26,7 @@ try {
   assert.equal(health.ai.coachCueMode, 'contextual_auto_ephemeral');
   assert.equal(health.ai.debrief, 'deterministic_session_intel');
   assert.equal(health.ai.memorySync, 'sqlite_persistent');
-  assert.equal(health.ai.clientContext, 'sqlite_contextual_question_cues');
+  assert.equal(health.ai.clientContext, 'sqlite_notion_session_prep_question_cues');
   assert.equal(health.ai.dayRoster, 'calendar_sync_candidate_resolver');
   assert.equal(health.calendar.timeZone, 'America/New_York');
   assert.equal(health.calendar.dateMode, 'local_day_not_utc');
@@ -177,6 +177,25 @@ try {
           summary: 'Client folds quickly when family pushes back.',
           bestQuestions: ['What boundary would protect your Sunday without over-explaining?'],
           risks: ['Do not rush into scripts before validating fatigue.'],
+          previousSessionNotes: [
+            {
+              sessionDate: '2026-07-17',
+              title: 'Prior Notion session note',
+              summary: 'Sleep debt made the family boundary feel harder to hold.',
+              themes: ['fatigue and boundary drift'],
+              suggestedQuestions: ['Where does sleep debt make the boundary feel least possible?']
+            },
+            {
+              sessionDate: '2026-07-24',
+              summary: 'Client noticed they default to caretaking when family asks for urgent help.',
+              risks: ['Watch for shame when naming limits.']
+            },
+            {
+              sessionDate: '2026-07-30',
+              summary: 'Homework kept slipping unless the next step was specific and small.',
+              nextSteps: ['Choose one tiny boundary action before the next contact.']
+            }
+          ],
           source: 'notion-clinical-hud'
         }
       ]
@@ -200,6 +219,7 @@ try {
   assert.equal(candidate.selected.displayName, 'Smoke Client');
   assert.equal(candidate.selected.reason, 'calendar_window_match');
   assert.match(candidate.contextHints.join(' '), /protect your Sunday/i);
+  assert.match(candidate.contextHints.join(' '), /sleep debt/i);
 
   const dismissedCandidate = await fetch(`${base}/v1/client_candidate`, {
     method: 'POST',

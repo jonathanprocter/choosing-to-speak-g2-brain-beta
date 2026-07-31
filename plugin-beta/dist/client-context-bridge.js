@@ -222,7 +222,7 @@
 
   function syncClientContext(context) {
     if (!context) return Promise.resolve(null);
-    if (!context.summary && !context.items && !context.bestQuestions && !context.questionsToAsk && !context.questionCues) {
+    if (!hasPrepContext(context)) {
       return Promise.resolve(null);
     }
     return apiPost("/v1/client_context", context);
@@ -441,11 +441,11 @@
       : "No client selected yet";
     var prepText = hints.length
       ? hints.length + " prep hint" + (hints.length === 1 ? "" : "s") + " loaded"
-      : selectedContext && (selectedContext.summary || selectedContext.bestQuestions || selectedContext.items)
+      : hasPrepContext(selectedContext)
         ? "Prep loaded"
         : "Waiting for Notion prep";
-    var brief = selectedContext && (selectedContext.summary || selectedContext.bestQuestions || selectedContext.goal)
-      ? clean(selectedContext.summary || selectedContext.bestQuestions || selectedContext.goal)
+    var brief = selectedContext && (selectedContext.summary || selectedContext.bestQuestions || selectedContext.goal || previousNotesBrief(selectedContext))
+      ? clean(selectedContext.summary || selectedContext.bestQuestions || selectedContext.goal || previousNotesBrief(selectedContext))
       : hints[0] || "Client suggestions appear here from today's SimplePractice2 roster. Dismiss or name manually when the match is wrong.";
     var clientNode = panel.querySelector("[data-cts-private-client]");
     var prepNode = panel.querySelector("[data-cts-private-prep]");
@@ -459,6 +459,45 @@
   function truncateText(text, max) {
     var value = clean(text);
     return value.length <= max ? value : value.slice(0, Math.max(0, max - 1)).trimEnd() + "...";
+  }
+
+  function hasPrepContext(context) {
+    return Boolean(context && (
+      context.summary ||
+      context.items ||
+      context.bestQuestions ||
+      context.questionsToAsk ||
+      context.questionCues ||
+      context.goal ||
+      context.risks ||
+      context.previousSessionNotes ||
+      context.previousNotes ||
+      context.recentSessionNotes ||
+      context.recentNotes ||
+      context.notionSessionNotes ||
+      context.notionNotes
+    ));
+  }
+
+  function previousNotesBrief(context) {
+    var notes = []
+      .concat(Array.isArray(context && context.previousSessionNotes) ? context.previousSessionNotes : [])
+      .concat(Array.isArray(context && context.previousNotes) ? context.previousNotes : [])
+      .concat(Array.isArray(context && context.recentSessionNotes) ? context.recentSessionNotes : [])
+      .concat(Array.isArray(context && context.recentNotes) ? context.recentNotes : [])
+      .concat(Array.isArray(context && context.notionSessionNotes) ? context.notionSessionNotes : [])
+      .concat(Array.isArray(context && context.notionNotes) ? context.notionNotes : []);
+    for (var index = 0; index < notes.length && index < 5; index += 1) {
+      var note = notes[index];
+      var text = typeof note === "string"
+        ? note
+        : isRecord(note)
+          ? note.summary || note.sessionSummary || note.clinicalSummary || note.note || note.notes || note.text || note.content || note.title || note.name
+          : "";
+      text = clean(text);
+      if (text) return text;
+    }
+    return "";
   }
 
   function ensureDefaultQueryParams() {

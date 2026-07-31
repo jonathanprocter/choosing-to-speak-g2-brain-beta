@@ -56,7 +56,16 @@ Use `POST /v1/client_context` for durable prep from Notion or the clinical HUD:
   "source": "notion-clinical-hud",
   "summary": "What matters for this client today.",
   "bestQuestions": ["What would make this next step feel doable?"],
-  "risks": ["Do not rush into scripts before validating fatigue."]
+  "risks": ["Do not rush into scripts before validating fatigue."],
+  "previousSessionNotes": [
+    {
+      "sessionDate": "2026-07-17",
+      "title": "Previous Notion session note",
+      "summary": "A concise prior-session theme or clinical prep note.",
+      "themes": ["Recurring pattern to listen for"],
+      "suggestedQuestions": ["A useful question carried forward from prior work."]
+    }
+  ]
 }
 ```
 
@@ -75,13 +84,23 @@ Use `POST /v1/day_roster` for the SimplePractice-synced calendar day:
       "start": "2:00 PM",
       "durationMinutes": 50,
       "summary": "Optional Notion prep can ride along here.",
-      "bestQuestions": ["What feels most important to cover today?"]
+      "bestQuestions": ["What feels most important to cover today?"],
+      "previousSessionNotes": [
+        {
+          "sessionDate": "2026-07-24",
+          "summary": "Prior-session context used to auto-populate the scene.",
+          "risks": ["Specific risk or boundary to watch for today."],
+          "nextSteps": ["One carry-forward action or thread."]
+        }
+      ]
     }
   ]
 }
 ```
 
 The plugin bridge calls `POST /v1/client_candidate` to suggest the most likely client for the current Eastern-time appointment window. Dismissed candidates are sent as `dismissedClientIds`, and a manual name can be sent as `manualClientContext`.
+
+For scene setup, send the last 3-5 Notion notes as `previousSessionNotes`, `recentSessionNotes`, or `notionSessionNotes` on either the client prep payload or the matching roster entry. Each note may be plain text or an object with fields such as `sessionDate`, `title`, `summary`, `themes`, `patterns`, `goals`, `risks`, `avoid`, `nextSteps`, `suggestedQuestions`, and `notionUrl`. The backend keeps the five most recent notes, stores them with the client context in SQLite, and uses them for candidate hints, automatic question cues, and counselor-colleague coaching.
 
 ## Auth
 

@@ -211,7 +211,7 @@ function healthPayload() {
       coachCueMode: 'contextual_auto_ephemeral',
       debrief: env.OPENAI_API_KEY ? 'openai_session_intel' : 'deterministic_session_intel',
       memorySync: 'sqlite_persistent',
-      clientContext: 'sqlite_contextual_question_cues',
+      clientContext: 'sqlite_notion_session_prep_question_cues',
       dayRoster: 'calendar_sync_candidate_resolver',
       dynamics: 'clinical_hud_inspired_metrics'
     },
@@ -1247,6 +1247,7 @@ function normalizeClientContext(body) {
   const source = isRecord(body?.input) ? body.input : body;
   if (!isRecord(source)) return null;
   const client = isRecord(source.client) ? source.client : {};
+  const previousSessionNotes = normalizePreviousSessionNotes(source);
   let displayName = cleanText(
     source.displayName ||
     source.clientName ||
@@ -1266,9 +1267,10 @@ function normalizeClientContext(body) {
     ...extractContextStrings(source.clinicalSummary),
     ...extractContextStrings(source.notionSummary),
     ...extractContextStrings(source.presentingContext),
-    ...extractContextStrings(source.contextSummary)
+    ...extractContextStrings(source.contextSummary),
+    ...previousSessionNotes.map(previousSessionSummary)
   ]).join(' '), 1200);
-  const items = normalizeClientContextItems(source);
+  const items = normalizeClientContextItems(source, previousSessionNotes);
   let clientId = cleanText(source.clientId || source.client_id || source.id || client.clientId || client.id || '');
   if (!clientId && displayName) clientId = stableClientId(displayName, summary);
   if (!displayName && clientId) displayName = clientId;
@@ -1284,7 +1286,7 @@ function normalizeClientContext(body) {
   };
 }
 
-function normalizeClientContextItems(source) {
+function normalizeClientContextItems(source, previousSessionNotes = normalizePreviousSessionNotes(source)) {
   const items = [];
   const pushItem = (kind, value) => {
     for (const text of extractContextStrings(value)) {
@@ -1314,7 +1316,156 @@ function normalizeClientContextItems(source) {
   pushItem('pattern', source.patterns || source.recurringPatterns);
   pushItem('homework', source.homework || source.nextSteps);
   pushItem('notion', source.notionUrl || source.notionPage || source.sourceUrl);
+  for (const note of previousSessionNotes) {
+    pushItem('previous_session', previousSessionSummary(note));
+    pushItem('pattern', note.themes);
+    pushItem('pattern', note.patterns);
+    pushItem('goal', note.goals);
+    pushItem('risk', note.risks);
+    pushItem('avoid', note.avoid);
+    pushItem('homework', note.homework);
+    pushItem('best_question', note.bestQuestions);
+    pushItem('notion', note.sourceUrl);
+  }
   return uniqueClientItems(items).slice(0, 32);
+}
+
+function normalizePreviousSessionNotes(source) {
+  const rawNotes = [
+    ...(Array.isArray(source?.previousSessionNotes) ? source.previousSessionNotes : []),
+    ...(Array.isArray(source?.previousNotes) ? source.previousNotes : []),
+    ...(Array.isArray(source?.recentSessionNotes) ? source.recentSessionNotes : []),
+    ...(Array.isArray(source?.recentNotes) ? source.recentNotes : []),
+    ...(Array.isArray(source?.notionSessionNotes) ? source.notionSessionNotes : []),
+    ...(Array.isArray(source?.notionNotes) ? source.notionNotes : [])
+  ];
+  const seen = new Set();
+  const notes = [];
+  rawNotes.forEach((value, index) => {
+    const note = normalizePreviousSessionNote(value, index);
+    if (!note) return;
+    const key = cleanText(`${note.sessionDate}|${note.title}|${note.summary}`).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    notes.push(note);
+  });
+  return notes
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.sessionDate || '');
+      const rightTime = Date.parse(right.sessionDate || '');
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return rightTime - leftTime;
+      return left.index - right.index;
+    })
+    .slice(0, 5);
+}
+
+function normalizePreviousSessionNote(value, index) {
+  if (typeof value === 'string') {
+    const summary = truncate(cleanText(value), 700);
+    return summary ? { index, sessionDate: '', title: '', summary } : null;
+  }
+  if (!isRecord(value)) return null;
+  const sessionDate = normalizeDate(
+    value.sessionDate ||
+    value.session_date ||
+    value.date ||
+    value.createdAt ||
+    value.created_at ||
+    value.lastEditedAt ||
+    value.last_edited_time
+  );
+  const title = truncate(cleanText(value.title || value.name || value.label || value.sessionTitle || value.noteTitle || value.pageTitle || ''), 120);
+  const summary = truncate(uniqueStrings([
+    ...extractContextStrings(value.summary),
+    ...extractContextStrings(value.sessionSummary),
+    ...extractContextStrings(value.clinicalSummary),
+    ...extractContextStrings(value.notionSummary),
+    ...extractContextStrings(value.progressNote),
+    ...extractContextStrings(value.sessionNote),
+    ...extractContextStrings(value.note),
+    ...extractContextStrings(value.notes),
+    ...extractContextStrings(value.text),
+    ...extractContextStrings(value.content),
+    ...extractContextStrings(value.assessment),
+    ...extractContextStrings(value.interventions),
+    ...extractContextStrings(value.response),
+    ...extractContextStrings(value.plan)
+  ]).join(' '), 700);
+  const bestQuestions = uniqueStrings([
+    ...extractContextStrings(value.bestQuestion),
+    ...extractContextStrings(value.bestQuestions),
+    ...extractContextStrings(value.questionsToAsk),
+    ...extractContextStrings(value.suggestedQuestions),
+    ...extractContextStrings(value.questionCues)
+  ]).slice(0, 4);
+  const themes = uniqueStrings([
+    ...extractContextStrings(value.themes),
+    ...extractContextStrings(value.theme),
+    ...extractContextStrings(value.focus),
+    ...extractContextStrings(value.focusAreas)
+  ]).slice(0, 4);
+  const patterns = uniqueStrings([
+    ...extractContextStrings(value.patterns),
+    ...extractContextStrings(value.recurringPatterns),
+    ...extractContextStrings(value.presentation),
+    ...extractContextStrings(value.presentingContext)
+  ]).slice(0, 4);
+  const goals = uniqueStrings([
+    ...extractContextStrings(value.goals),
+    ...extractContextStrings(value.goal),
+    ...extractContextStrings(value.sessionGoal),
+    ...extractContextStrings(value.nextGoal)
+  ]).slice(0, 4);
+  const risks = uniqueStrings([
+    ...extractContextStrings(value.risks),
+    ...extractContextStrings(value.risk),
+    ...extractContextStrings(value.watchFor),
+    ...extractContextStrings(value.flags)
+  ]).slice(0, 4);
+  const avoid = uniqueStrings([
+    ...extractContextStrings(value.avoid),
+    ...extractContextStrings(value.boundaries),
+    ...extractContextStrings(value.doNotSay),
+    ...extractContextStrings(value.forbiddenTopics)
+  ]).slice(0, 4);
+  const homework = uniqueStrings([
+    ...extractContextStrings(value.homework),
+    ...extractContextStrings(value.nextSteps),
+    ...extractContextStrings(value.actionItems),
+    ...extractContextStrings(value.plan)
+  ]).slice(0, 4);
+  const sourceUrl = truncate(cleanText(value.notionUrl || value.notionPage || value.sourceUrl || value.url || ''), 240);
+  if (!summary && !title && !bestQuestions.length && !themes.length && !patterns.length && !goals.length && !risks.length && !avoid.length && !homework.length) {
+    return null;
+  }
+  return {
+    index,
+    sessionDate,
+    title,
+    summary,
+    bestQuestions,
+    themes,
+    patterns,
+    goals,
+    risks,
+    avoid,
+    homework,
+    sourceUrl
+  };
+}
+
+function previousSessionSummary(note) {
+  const label = cleanText([
+    note.sessionDate ? `Prior session ${note.sessionDate.slice(0, 10)}` : `Prior session ${note.index + 1}`,
+    note.title
+  ].filter(Boolean).join(' - '));
+  const body = cleanText(note.summary || [
+    note.themes?.length ? `Themes: ${note.themes.join('; ')}` : '',
+    note.patterns?.length ? `Patterns: ${note.patterns.join('; ')}` : '',
+    note.goals?.length ? `Goals: ${note.goals.join('; ')}` : '',
+    note.risks?.length ? `Risks: ${note.risks.join('; ')}` : ''
+  ].filter(Boolean).join(' '));
+  return truncate([label, body].filter(Boolean).join(': '), 700);
 }
 
 function normalizeItemKind(value) {
