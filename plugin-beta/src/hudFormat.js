@@ -1,9 +1,8 @@
 const MAX_G2_CHARS = 620;
-const MAX_G2_LINES = 13;
-const PLANE_WIDTH = {
-  near: 31,
-  mid: 34,
-  far: 36,
+const ZONE_LIMITS = {
+  far: { chars: 120, lines: 3, width: 36 },
+  mid: { chars: 260, lines: 6, width: 34 },
+  near: { chars: 150, lines: 4, width: 31 },
 };
 const TIME_ZONE = 'America/New_York';
 
@@ -39,59 +38,45 @@ export function normalizeDynamics(value, fallback = {}) {
 }
 
 export function formatHud(state, now = Date.now()) {
-  const cue = state.cue && now < state.cueExpiresAt ? state.cue : null;
+  const zones = formatHudZones(state, now);
+  return [zones.near, zones.mid, zones.far]
+    .filter((zone) => normalizeText(zone))
+    .join('\n\n')
+    .slice(0, MAX_G2_CHARS);
+}
 
-  if (cue) {
-    return cap([
-      ...formatNearPlane(cue, state.cueExpiresAt, now),
-      '',
-      ...formatMiddlePlane(state),
-      '',
-      ...formatFarPlane(state, now),
-    ]);
-  }
+export function formatHudZones(state, now = Date.now()) {
+  const cue = state.cue && now < state.cueExpiresAt ? state.cue : null;
+  const zones = {
+    far: formatFarPlane(state, now),
+    mid: '',
+    near: cue ? formatNearPlane(cue, state.cueExpiresAt, now) : '',
+  };
 
   if (!state.token) {
-    return cap([
+    zones.mid = capZone('mid', [
       'MID OFFLINE',
-      ...takeWrappedLines('Backend unreachable. Key enrolls when reachable.', PLANE_WIDTH.mid, 2),
-      ...takeWrappedLines('Tap G2 or R1 retries.', PLANE_WIDTH.mid, 1),
-      '',
-      ...formatFarPlane(state, now),
+      ...takeWrappedLines('Backend unreachable. Key enrolls when reachable.', 'mid', 2),
+      ...takeWrappedLines('Tap G2 or R1 retries.', 'mid', 1),
     ]);
+    return zones;
   }
 
   if (!state.live) {
     const prep = firstContextHint(state);
-    return cap([
+    zones.mid = capZone('mid', [
       'MID PREP',
       'Transcript default on',
       'Auto assist highest',
       ...(prep
-        ? takeWrappedLines(prep, PLANE_WIDTH.mid, 3)
-        : takeWrappedLines('Tap G2 or R1 once to start.', PLANE_WIDTH.mid, 2)),
-      '',
-      ...formatFarPlane(state, now),
+        ? takeWrappedLines(prep, 'mid', 3)
+        : takeWrappedLines('Tap G2 or R1 once to start.', 'mid', 2)),
     ]);
+    return zones;
   }
 
-  return cap([
-    ...formatMiddlePlane(state, 5),
-    '',
-    ...formatFarPlane(state, now),
-  ]);
-}
-
-function cap(lines) {
-  const fitted = [];
-  for (const line of lines.filter((value) => value !== undefined && value !== null)) {
-    const text = line === '' ? '' : fitLine(line, PLANE_WIDTH.far);
-    if (!text && (!fitted.length || fitted[fitted.length - 1] === '')) continue;
-    fitted.push(text);
-  }
-  while (fitted[fitted.length - 1] === '') fitted.pop();
-  const clipped = fitted.slice(0, MAX_G2_LINES);
-  return clipped.join('\n').slice(0, MAX_G2_CHARS);
+  zones.mid = formatMiddlePlane(state, cue ? 2 : 5);
+  return zones;
 }
 
 function formatNearPlane(cue, expiresAt, now) {
@@ -99,38 +84,38 @@ function formatNearPlane(cue, expiresAt, now) {
   const label = cue.source === 'client_context' ? 'NEAR PREP' : 'NEAR COUNSELOR';
   const title = normalizeText(cue.title || 'Counselor cue').toUpperCase();
   const detail = normalizeText(cue.detail || cue.sayThis || '');
-  return [
-    fitLine(`${label} CLOSE ${seconds}S`, PLANE_WIDTH.near),
-    ...takeWrappedLines(title, PLANE_WIDTH.near, 1),
-    ...takeWrappedLines(detail, PLANE_WIDTH.near, 2),
-  ];
+  return capZone('near', [
+    fitLine(`${label} CLOSE ${seconds}S`, 'near'),
+    ...takeWrappedLines(title, 'near', 1),
+    ...takeWrappedLines(detail, 'near', 2),
+  ]);
 }
 
 function formatMiddlePlane(state, transcriptLines = 2) {
   if (state.transcript) {
-    return [
+    return capZone('mid', [
       'MID TRANSCRIPT',
-      ...lastWrappedLines(state.transcript, PLANE_WIDTH.mid, transcriptLines),
-    ];
+      ...lastWrappedLines(state.transcript, 'mid', transcriptLines),
+    ]);
   }
-  return [
+  return capZone('mid', [
     'MID TRANSCRIPT',
     ...(state.live
       ? takeWrappedLines(state.audioFrames > 0
         ? `Mic frames ${state.audioFrames}. Waiting for speech.`
-        : 'Listening for G2 mic.', PLANE_WIDTH.mid, 2)
-      : takeWrappedLines('Transcript appears here by default.', PLANE_WIDTH.mid, 2)),
-  ];
+        : 'Listening for G2 mic.', 'mid', 2)
+      : takeWrappedLines('Transcript appears here by default.', 'mid', 2)),
+  ]);
 }
 
 function formatFarPlane(state, now) {
   const lines = [
-    fitLine(`FAR ${state.live ? 'LIVE' : 'READY'} ${formatTime(now)}`, PLANE_WIDTH.far),
-    fitLine(formatClientLine(state.client), PLANE_WIDTH.far),
+    fitLine(`FAR ${state.live ? 'LIVE' : 'READY'} ${formatTime(now)}`, 'far'),
+    fitLine(formatClientLine(state.client), 'far'),
   ];
   const dynamics = formatDynamics(state.dynamics);
-  if (dynamics) lines.push(fitLine(dynamics, PLANE_WIDTH.far));
-  return lines.filter(Boolean).slice(0, 3);
+  if (dynamics) lines.push(fitLine(dynamics, 'far'));
+  return capZone('far', lines);
 }
 
 function formatClientLine(client) {
@@ -163,15 +148,15 @@ function formatTime(value) {
   });
 }
 
-function lastWrappedLines(text, width, count) {
-  return wrapText(text, width).slice(-count);
+function lastWrappedLines(text, zone, count) {
+  return wrapText(text, zoneWidth(zone)).slice(-count);
 }
 
-function takeWrappedLines(text, width, count) {
-  const lines = wrapText(text, width);
+function takeWrappedLines(text, zone, count) {
+  const lines = wrapText(text, zoneWidth(zone));
   if (lines.length <= count) return lines;
   const kept = lines.slice(0, count);
-  kept[count - 1] = fitLine(`${kept[count - 1]}...`, width);
+  kept[count - 1] = fitLine(`${kept[count - 1]}...`, zone);
   return kept;
 }
 
@@ -193,8 +178,25 @@ export function wrapText(text, width) {
   return lines;
 }
 
-function fitLine(value, width) {
+function capZone(zone, lines) {
+  const limit = ZONE_LIMITS[zone] || ZONE_LIMITS.mid;
+  const fitted = [];
+  for (const line of lines.filter((value) => value !== undefined && value !== null)) {
+    const text = line === '' ? '' : fitLine(line, zone);
+    if (!text && (!fitted.length || fitted[fitted.length - 1] === '')) continue;
+    fitted.push(text);
+  }
+  while (fitted[fitted.length - 1] === '') fitted.pop();
+  return fitted.slice(0, limit.lines).join('\n').slice(0, limit.chars);
+}
+
+function fitLine(value, zoneOrWidth) {
+  const width = typeof zoneOrWidth === 'number' ? zoneOrWidth : zoneWidth(zoneOrWidth);
   const text = normalizeText(value);
   if (text.length <= width) return text;
   return `${text.slice(0, Math.max(0, width - 3)).trimEnd()}...`;
+}
+
+function zoneWidth(zone) {
+  return (ZONE_LIMITS[zone] || ZONE_LIMITS.mid).width;
 }

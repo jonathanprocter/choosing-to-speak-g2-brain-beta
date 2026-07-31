@@ -7,17 +7,48 @@ import {
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk';
 import './style.css';
-import { formatHud, normalizeDynamics, normalizeText } from './hudFormat.js';
+import { formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
 
-const VERSION = '0.1.48';
+const VERSION = '0.1.49';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';
 const DEVICE_ID_KEY = 'ctsDeviceId.v1';
 const PACKAGE_ID = 'cc.procterai.choosingtospeak';
 const LENS_ID = 'clinical';
-const MAIN_CONTAINER_ID = 1;
-const MAIN_CONTAINER_NAME = 'main';
+const HUD_ZONES = {
+  far: {
+    containerID: 1,
+    containerName: 'zone-far',
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 80,
+    paddingLength: 4,
+    isEventCapture: 0,
+  },
+  mid: {
+    containerID: 2,
+    containerName: 'zone-mid',
+    xPosition: 0,
+    yPosition: 80,
+    width: 576,
+    height: 112,
+    paddingLength: 6,
+    isEventCapture: 1,
+  },
+  near: {
+    containerID: 3,
+    containerName: 'zone-near',
+    xPosition: 0,
+    yPosition: 192,
+    width: 576,
+    height: 96,
+    paddingLength: 6,
+    isEventCapture: 0,
+  },
+};
+const HUD_ZONE_ORDER = ['far', 'mid', 'near'];
 const CUE_TTL_MS = 6500;
 const COACH_MIN_CHARS = 38;
 const COACH_INTERVAL_MS = 9000;
@@ -66,6 +97,9 @@ const state = {
   lastClientRefreshAt: 0,
   clientRefreshTimer: null,
   dynamics: {},
+  lastHudZones: {},
+  renderInFlight: false,
+  renderQueued: false,
 };
 
 const logLines = [];
@@ -195,27 +229,29 @@ function validToken(value) {
 }
 
 async function createStartupPage() {
+  const zones = normalizeHudZoneContent(formatHudZones(state));
   const result = await state.bridge.createStartUpPageContainer(new CreateStartUpPageContainer({
-    containerTotalNum: 1,
-    textObject: [
-      new TextContainerProperty({
-        xPosition: 0,
-        yPosition: 0,
-        width: 576,
-        height: 288,
-        borderWidth: 0,
-        borderColor: 15,
-        paddingLength: 8,
-        containerID: MAIN_CONTAINER_ID,
-        containerName: MAIN_CONTAINER_NAME,
-        content: formatHud(state),
-        isEventCapture: 1,
-      }),
-    ],
+    containerTotalNum: HUD_ZONE_ORDER.length,
+    textObject: HUD_ZONE_ORDER.map((zone) => buildHudContainer(zone, zones[zone])),
   }));
   state.startupCreated = result === 0;
+  state.lastHudZones = zones;
   log('createStartUpPageContainer result', { result });
   if (!state.startupCreated) throw new Error(`G2 page create failed: ${result}`);
+}
+
+function buildHudContainer(zone, content) {
+  const spec = HUD_ZONES[zone];
+  return new TextContainerProperty({
+    ...spec,
+    borderWidth: 0,
+    borderColor: 15,
+    content: content || ' ',
+  });
+}
+
+function normalizeHudZoneContent(zones) {
+  return Object.fromEntries(HUD_ZONE_ORDER.map((zone) => [zone, zones[zone] || ' ']));
 }
 
 function handleEvenHubEvent(event) {
@@ -704,12 +740,31 @@ function dismissCue() {
 
 async function renderGlasses() {
   if (!state.bridgeReady || !state.startupCreated) return;
-  const content = formatHud(state);
-  await state.bridge.textContainerUpgrade(new TextContainerUpgrade({
-    containerID: MAIN_CONTAINER_ID,
-    containerName: MAIN_CONTAINER_NAME,
-    content,
-  }));
+  if (state.renderInFlight) {
+    state.renderQueued = true;
+    return;
+  }
+  state.renderInFlight = true;
+  try {
+    do {
+      state.renderQueued = false;
+      const zones = normalizeHudZoneContent(formatHudZones(state));
+      for (const zone of HUD_ZONE_ORDER) {
+        const content = zones[zone];
+        if (content === state.lastHudZones[zone]) continue;
+        const spec = HUD_ZONES[zone];
+        await state.bridge.textContainerUpgrade(new TextContainerUpgrade({
+          containerID: spec.containerID,
+          containerName: spec.containerName,
+          content,
+          contentLength: 2000,
+        }));
+      }
+      state.lastHudZones = zones;
+    } while (state.renderQueued);
+  } finally {
+    state.renderInFlight = false;
+  }
 }
 
 boot().catch((error) => {
