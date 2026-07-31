@@ -54,8 +54,8 @@ export function formatHud(state, now = Date.now()) {
   if (!state.token) {
     return cap([
       'MID OFFLINE',
-      ...wrapText('Backend unreachable. Key enrolls when reachable.', PLANE_WIDTH.mid).slice(0, 2),
-      ...wrapText('Tap G2 or R1 retries.', PLANE_WIDTH.mid).slice(0, 1),
+      ...takeWrappedLines('Backend unreachable. Key enrolls when reachable.', PLANE_WIDTH.mid, 2),
+      ...takeWrappedLines('Tap G2 or R1 retries.', PLANE_WIDTH.mid, 1),
       '',
       ...formatFarPlane(state, now),
     ]);
@@ -68,8 +68,8 @@ export function formatHud(state, now = Date.now()) {
       'Transcript default on',
       'Auto assist highest',
       ...(prep
-        ? wrapText(prep, PLANE_WIDTH.mid).slice(0, 3)
-        : wrapText('Tap G2 or R1 once to start.', PLANE_WIDTH.mid).slice(0, 2)),
+        ? takeWrappedLines(prep, PLANE_WIDTH.mid, 3)
+        : takeWrappedLines('Tap G2 or R1 once to start.', PLANE_WIDTH.mid, 2)),
       '',
       ...formatFarPlane(state, now),
     ]);
@@ -101,8 +101,8 @@ function formatNearPlane(cue, expiresAt, now) {
   const detail = normalizeText(cue.detail || cue.sayThis || '');
   return [
     fitLine(`${label} CLOSE ${seconds}S`, PLANE_WIDTH.near),
-    ...wrapText(title, PLANE_WIDTH.near).slice(0, 1),
-    ...wrapText(detail, PLANE_WIDTH.near).slice(0, 2),
+    ...takeWrappedLines(title, PLANE_WIDTH.near, 1),
+    ...takeWrappedLines(detail, PLANE_WIDTH.near, 2),
   ];
 }
 
@@ -116,10 +116,10 @@ function formatMiddlePlane(state, transcriptLines = 2) {
   return [
     'MID TRANSCRIPT',
     ...(state.live
-      ? wrapText(state.audioFrames > 0
+      ? takeWrappedLines(state.audioFrames > 0
         ? `Mic frames ${state.audioFrames}. Waiting for speech.`
-        : 'Listening for G2 mic.', PLANE_WIDTH.mid).slice(0, 2)
-      : wrapText('Transcript appears here by default.', PLANE_WIDTH.mid).slice(0, 2)),
+        : 'Listening for G2 mic.', PLANE_WIDTH.mid, 2)
+      : takeWrappedLines('Transcript appears here by default.', PLANE_WIDTH.mid, 2)),
   ];
 }
 
@@ -165,6 +165,14 @@ function formatTime(value) {
 
 function lastWrappedLines(text, width, count) {
   return wrapText(text, width).slice(-count);
+}
+
+function takeWrappedLines(text, width, count) {
+  const lines = wrapText(text, width);
+  if (lines.length <= count) return lines;
+  const kept = lines.slice(0, count);
+  kept[count - 1] = fitLine(`${kept[count - 1]}...`, width);
+  return kept;
 }
 
 export function wrapText(text, width) {

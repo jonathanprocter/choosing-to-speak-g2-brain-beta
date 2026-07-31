@@ -116,7 +116,7 @@ export function formatGlassesText(state) {
   if (alert) {
     return cap([
       'NEAR DYNAMICS ALERT',
-      ...wrapText(alert, WIDTH.near).slice(0, 3),
+      ...takeWrappedLines(alert, WIDTH.near, 3),
       '',
       'FAR STATUS',
       fitLine(connection, WIDTH.far),
@@ -126,7 +126,7 @@ export function formatGlassesText(state) {
 
   return cap([
     `MID ${mode}`,
-    ...wrapText(body, WIDTH.mid).slice(0, 4),
+    ...takeWrappedLines(body, WIDTH.mid, 4),
     '',
     'FAR STATUS',
     fitLine(connection, WIDTH.far),
@@ -150,6 +150,14 @@ function wrapText(text, width) {
   }
   if (line) lines.push(line);
   return lines;
+}
+
+function takeWrappedLines(text, width, count) {
+  const lines = wrapText(text, width);
+  if (lines.length <= count) return lines;
+  const kept = lines.slice(0, count);
+  kept[count - 1] = fitLine(`${kept[count - 1]}...`, width);
+  return kept;
 }
 
 function cap(lines) {
