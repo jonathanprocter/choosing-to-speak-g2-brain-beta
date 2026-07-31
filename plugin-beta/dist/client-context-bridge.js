@@ -15,7 +15,9 @@
     "/v1/client_candidate"
   ];
   var ui = null;
+  var privatePanel = null;
   var currentCandidate = null;
+  var lastCandidateResult = null;
   var candidateTimer = null;
 
   function runtime() {
@@ -86,6 +88,7 @@
   function clearContext() {
     removeJson(CONTEXT_KEY);
     window.dispatchEvent(new CustomEvent("choosingToSpeakClientContextChanged", { detail: null }));
+    renderPrivateDashboard();
   }
 
   function dismissedForToday() {
@@ -228,22 +231,28 @@
   async function uploadRoster(roster) {
     var result = await apiPost("/v1/day_roster", roster);
     refreshCandidate();
+    renderPrivateDashboard();
     return result;
   }
 
   async function refreshCandidate() {
     if (candidateTimer) clearTimeout(candidateTimer);
     candidateTimer = null;
-    if (getContext()) return null;
+    if (getContext()) {
+      renderPrivateDashboard();
+      return null;
+    }
     var params = new URLSearchParams(window.location.search || "");
     var result = await apiPost("/v1/client_candidate", {
       lensId: clean(params.get("lensId") || params.get("activeLensId") || "clinical"),
       at: new Date().toISOString(),
       dismissedClientIds: dismissedForToday().list
     });
+    lastCandidateResult = result;
     currentCandidate = result && result.selected ? result.selected : null;
     if (currentCandidate) renderCandidateUi(currentCandidate);
     else hideCandidateUi();
+    renderPrivateDashboard();
     return result;
   }
 
@@ -272,7 +281,7 @@
       installCandidateStyles();
     }
     var name = ui.querySelector(".cts-client-candidate__name");
-    if (name) name.textContent = "Likely: " + candidate.displayName;
+    if (name) name.textContent = "Today: " + candidate.displayName + candidateTimeSuffix(candidate);
     ui.hidden = false;
   }
 
@@ -287,6 +296,197 @@
     setContext({ displayName: name, lensId: "clinical", source: "manual" });
   }
 
+  function candidateTimeSuffix(candidate) {
+    var time = formatEasternTime(candidate && candidate.startsAt);
+    return time ? " at " + time : "";
+  }
+
+  function formatEasternTime(value) {
+    try {
+      if (!value) return "";
+      var date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "";
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric",
+        minute: "2-digit"
+      }).format(date);
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function installPrivateUx() {
+    installPrivateStyles();
+    renderPrivateDashboard();
+    hideAdminPanels();
+    var observer = new MutationObserver(function () {
+      hideAdminPanels();
+      renderPrivateDashboard();
+    });
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  function hideAdminPanels() {
+    if (!document.body) return;
+    var selectors = [
+      ".account-devices-panel",
+      ".account-connect-form",
+      ".account-block[aria-label='Sign in']",
+      ".account-block[aria-label='Connect this device']",
+      ".account-block[aria-label='Active keys and usage']"
+    ];
+    selectors.forEach(function (selector) {
+      document.querySelectorAll(selector).forEach(markHiddenAdmin);
+    });
+    ["Account & devices", "Paste the full key", "Beta app key", "Sign-in not configured", "Connect this device"].forEach(function (text) {
+      findTextNodes(text).forEach(function (node) {
+        var panel = closestPanel(node.parentElement);
+        if (panel) markHiddenAdmin(panel);
+      });
+    });
+  }
+
+  function markHiddenAdmin(element) {
+    if (!element || element === privatePanel) return;
+    element.setAttribute("data-cts-private-hidden", "true");
+  }
+
+  function findTextNodes(text) {
+    if (!document.body || !text) return [];
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    var nodes = [];
+    var node = null;
+    while ((node = walker.nextNode())) {
+      if (node.nodeValue && node.nodeValue.indexOf(text) >= 0) nodes.push(node);
+      if (nodes.length >= 12) break;
+    }
+    return nodes;
+  }
+
+  function closestPanel(element) {
+    var node = element;
+    while (node && node !== document.body) {
+      if (node.getAttribute && node.getAttribute("data-cts-private-dashboard") === "true") return null;
+      if (
+        node.matches &&
+        (node.matches("section") ||
+          node.matches(".transcript-debug") ||
+          node.matches(".account-block") ||
+          node.matches(".account-connect-form"))
+      ) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function ensurePrivatePanel() {
+    if (privatePanel && privatePanel.isConnected) return privatePanel;
+    if (!document.body) return null;
+    privatePanel = document.createElement("section");
+    privatePanel.className = "transcript-debug cts-private-dashboard";
+    privatePanel.setAttribute("data-cts-private-dashboard", "true");
+    privatePanel.innerHTML = [
+      '<div class="cts-private-dashboard__head">',
+      '<div>',
+      '<p class="cts-private-dashboard__eyebrow">Your default</p>',
+      '<h3>Counselor Colleague</h3>',
+      '<p class="cts-private-dashboard__sub">Transcript-first, max assist, clinical cues.</p>',
+      '</div>',
+      '<span class="cts-private-dashboard__badge">On</span>',
+      '</div>',
+      '<div class="cts-private-dashboard__grid">',
+      '<div><span>Client</span><strong data-cts-private-client>Checking today...</strong></div>',
+      '<div><span>Prep</span><strong data-cts-private-prep>Awaiting Notion prep</strong></div>',
+      '<div><span>Calendar</span><strong>SimplePractice2, Eastern</strong></div>',
+      '<div><span>Glasses</span><strong>Transcript default</strong></div>',
+      '</div>',
+      '<p class="cts-private-dashboard__brief" data-cts-private-brief></p>',
+      '<div class="cts-private-dashboard__actions">',
+      '<button type="button" data-cts-client-action="use">Use client</button>',
+      '<button type="button" data-cts-client-action="dismiss">Dismiss</button>',
+      '<button type="button" data-cts-client-action="manual">Name</button>',
+      '<button type="button" data-cts-client-action="refresh">Refresh</button>',
+      '</div>'
+    ].join("");
+    privatePanel.addEventListener("click", function (event) {
+      var button = event.target && event.target.closest("[data-cts-client-action]");
+      if (!button) return;
+      var action = button.getAttribute("data-cts-client-action");
+      if (action === "use") setContext(currentCandidate || (lastCandidateResult && lastCandidateResult.selected));
+      if (action === "dismiss") dismissCandidate(currentCandidate || (lastCandidateResult && lastCandidateResult.selected));
+      if (action === "manual") setManualName();
+      if (action === "refresh") refreshCandidate();
+    });
+    var anchor = document.querySelector(".account-devices-panel") || document.querySelector("[aria-label='Account & devices']");
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(privatePanel, anchor);
+    else document.getElementById("root")?.appendChild(privatePanel) || document.body.appendChild(privatePanel);
+    return privatePanel;
+  }
+
+  function renderPrivateDashboard() {
+    var panel = ensurePrivatePanel();
+    if (!panel) return;
+    var selectedContext = getContext();
+    var candidate = selectedContext || currentCandidate || (lastCandidateResult && lastCandidateResult.selected);
+    var hints = Array.isArray(lastCandidateResult && lastCandidateResult.contextHints)
+      ? lastCandidateResult.contextHints
+      : [];
+    var clientText = candidate
+      ? clean(candidate.displayName || candidate.clientName || candidate.name || candidate.clientId) + candidateTimeSuffix(candidate)
+      : "No client selected yet";
+    var prepText = hints.length
+      ? hints.length + " prep hint" + (hints.length === 1 ? "" : "s") + " loaded"
+      : selectedContext && (selectedContext.summary || selectedContext.bestQuestions || selectedContext.items)
+        ? "Prep loaded"
+        : "Waiting for Notion prep";
+    var brief = selectedContext && (selectedContext.summary || selectedContext.bestQuestions || selectedContext.goal)
+      ? clean(selectedContext.summary || selectedContext.bestQuestions || selectedContext.goal)
+      : hints[0] || "Client suggestions appear here from today's SimplePractice2 roster. Dismiss or name manually when the match is wrong.";
+    var clientNode = panel.querySelector("[data-cts-private-client]");
+    var prepNode = panel.querySelector("[data-cts-private-prep]");
+    var briefNode = panel.querySelector("[data-cts-private-brief]");
+    if (clientNode) clientNode.textContent = clientText;
+    if (prepNode) prepNode.textContent = prepText;
+    if (briefNode) briefNode.textContent = truncateText(brief, 180);
+    panel.dataset.hasClient = candidate ? "true" : "false";
+  }
+
+  function truncateText(text, max) {
+    var value = clean(text);
+    return value.length <= max ? value : value.slice(0, Math.max(0, max - 1)).trimEnd() + "...";
+  }
+
+  function ensureDefaultQueryParams() {
+    try {
+      var url = new URL(window.location.href);
+      var defaults = {
+        activeLensId: "custom",
+        lens: "custom",
+        assistLevel: "6",
+        assistFrequency: "high",
+        autoOpenConfidence: "0.86",
+        cueDelivery: "auto",
+        answerDelivery: "coaching",
+        answerLength: "medium",
+        maxLongPages: "3",
+        liveMicSource: "g2Mic"
+      };
+      var changed = false;
+      Object.keys(defaults).forEach(function (key) {
+        if (url.searchParams.get(key) !== defaults[key]) {
+          url.searchParams.set(key, defaults[key]);
+          changed = true;
+        }
+      });
+      if (changed) window.history.replaceState(window.history.state, "", url.toString());
+    } catch (_error) {}
+  }
+
   function installCandidateStyles() {
     if (document.getElementById("cts-client-candidate-style")) return;
     var style = document.createElement("style");
@@ -298,6 +498,32 @@
       ".cts-client-candidate__actions{display:flex;gap:6px;flex:0 0 auto}",
       ".cts-client-candidate button{appearance:none;border:1px solid rgba(255,255,255,.22);background:#24302b;color:#f4f7f4;border-radius:6px;padding:5px 8px;font:inherit}",
       ".cts-client-candidate button:first-child{background:#d7efe1;color:#13211a;border-color:#d7efe1}"
+    ].join("");
+    document.head.appendChild(style);
+  }
+
+  function installPrivateStyles() {
+    if (document.getElementById("cts-private-dashboard-style")) return;
+    var style = document.createElement("style");
+    style.id = "cts-private-dashboard-style";
+    style.textContent = [
+      "[data-cts-private-hidden='true']{display:none!important}",
+      ".cts-private-dashboard{border:1px solid rgba(218,241,232,.13);background:rgba(19,26,23,.86);color:#ecf8f0;margin:18px 0;padding:16px;border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,.18)}",
+      ".cts-private-dashboard__head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}",
+      ".cts-private-dashboard__eyebrow{margin:0 0 3px;color:#91a49b;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}",
+      ".cts-private-dashboard h3{margin:0;color:#f0fff6;font-size:22px;line-height:1.08}",
+      ".cts-private-dashboard__sub{margin:5px 0 0;color:#a7b8b0;font-size:14px;line-height:1.35}",
+      ".cts-private-dashboard__badge{border:1px solid rgba(64,191,166,.52);color:#8fe7d4;border-radius:999px;padding:4px 10px;font-weight:700;font-size:12px;white-space:nowrap}",
+      ".cts-private-dashboard__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0}",
+      ".cts-private-dashboard__grid div{min-width:0;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.03);border-radius:6px;padding:10px}",
+      ".cts-private-dashboard__grid span{display:block;color:#91a49b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}",
+      ".cts-private-dashboard__grid strong{display:block;color:#ecf8f0;font-size:14px;line-height:1.25;overflow-wrap:anywhere}",
+      ".cts-private-dashboard__brief{margin:10px 0 0;color:#b9c9c1;font-size:14px;line-height:1.38}",
+      ".cts-private-dashboard__actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:14px}",
+      ".cts-private-dashboard button{appearance:none;border:1px solid rgba(255,255,255,.15);background:#202b27;color:#ecf8f0;border-radius:6px;padding:8px 6px;font:700 13px/1.2 system-ui,-apple-system,BlinkMacSystemFont,sans-serif}",
+      ".cts-private-dashboard button:first-child{background:#d8efe1;color:#102018;border-color:#d8efe1}",
+      ".cts-private-dashboard[data-has-client='false'] button:first-child{opacity:.56}",
+      "@media (max-width:420px){.cts-private-dashboard{margin:14px 0;padding:14px}.cts-private-dashboard__grid{grid-template-columns:1fr}.cts-private-dashboard__actions{grid-template-columns:repeat(2,minmax(0,1fr))}.cts-private-dashboard h3{font-size:20px}}"
     ].join("");
     document.head.appendChild(style);
   }
@@ -326,11 +552,14 @@
     var message = isRecord(payload && payload.data) ? payload.data : payload;
     if (!isRecord(message)) return;
     if (message.type === "choosing_to_speak.client_context") setContext(message.payload || message.context || message);
-    if (message.type === "choosing_to_speak.day_roster") uploadRoster(message.payload || message.roster || message);
+    if (message.type === "choosing_to_speak.day_roster" || message.type === "choosing_to_speak.google_calendar_day") {
+      uploadRoster(message.payload || message.roster || message.events || message);
+    }
     if (message.type === "choosing_to_speak.client_candidate.dismiss") dismissCandidate(message.payload || currentCandidate);
     if (message.type === "choosing_to_speak.client_candidate.refresh") refreshCandidate();
   }
 
+  ensureDefaultQueryParams();
   installFetchPatch();
   window.addEventListener("message", handleMessage);
   window.addEventListener("choosingToSpeakClientContext", function (event) {
@@ -346,6 +575,14 @@
     clear: clearContext,
     dismiss: dismissCandidate,
     refreshCandidate: refreshCandidate,
+    status: function () {
+      return {
+        clientContext: getContext(),
+        currentCandidate: currentCandidate,
+        candidateResult: lastCandidateResult,
+        dismissedClientIds: dismissedForToday().list
+      };
+    },
     sync: syncClientContext,
     uploadRoster: uploadRoster,
     uploadClientContext: function (context) {
@@ -358,9 +595,11 @@
   if (urlContext) setContext(urlContext);
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () {
+      installPrivateUx();
       candidateTimer = setTimeout(refreshCandidate, 1200);
     }, { once: true });
   } else {
+    installPrivateUx();
     candidateTimer = setTimeout(refreshCandidate, 1200);
   }
 }());

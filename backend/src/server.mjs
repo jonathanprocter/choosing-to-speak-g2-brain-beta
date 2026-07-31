@@ -18,8 +18,8 @@ const MEMORY_DB_PATH = env.MEMORY_DB_PATH || env.SQLITE_DB_PATH || new URL('../d
 const MEMORY_MAX_SESSIONS = env.MEMORY_MAX_SESSIONS || 500;
 const ROSTER_TIME_ZONE = env.CALENDAR_TIME_ZONE || env.ROSTER_TIME_ZONE || 'America/New_York';
 const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
-const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 96000);
-const WS_TRANSCRIBE_INTERVAL_MS = Number(env.WS_TRANSCRIBE_INTERVAL_MS || 4500);
+const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 24000);
+const WS_TRANSCRIBE_INTERVAL_MS = Number(env.WS_TRANSCRIBE_INTERVAL_MS || 2500);
 const WS_TRANSCRIBE_MAX_BYTES = Number(env.WS_TRANSCRIBE_MAX_BYTES || 384000);
 const SHUTDOWN_TIMEOUT_MS = Number(env.SHUTDOWN_TIMEOUT_MS || 25000);
 const sockets = new Set();
@@ -634,15 +634,17 @@ async function askOpenAI({ question, intent, settings, context }) {
 
 async function askOpenAICoach(context) {
   const prompt = [
-    'You are the Choosing to Speak automatic coaching lane for smart glasses.',
-    'Generate one short, timely coaching cue based on the SCENE CONTEXT and the recent transcript.',
-    'Scene context is primary: role, person, goal, vibe, boundaries, risks, and pre-session notes should shape the cue.',
-    'Client context is durable prep for this person or account. Use it to choose the best question or next move.',
-    'Conversation dynamics show whether the wearer should listen, repair, clarify, or ask a sharper question.',
-    'The cue must feel like it belongs to this exact conversation, not generic advice.',
-    'Prefer a concrete next thing the wearer can ask, say, notice, or avoid.',
-    'If the transcript contains an interview-style question, give a concise answer frame tied to the scene goal.',
-    'If the transcript is not a question, cue the next conversational move that advances the scene goal.',
+    'You are the Choosing to Speak counselor-colleague lane for smart glasses.',
+    'Write like a warm, clinically trained mental-health counselor colleague supporting Jonathan during a live session.',
+    'Generate one short, timely cue based on the SCENE CONTEXT and the recent transcript.',
+    'Scene context is primary: client, goal, affect, risk, boundaries, ruptures, and pre-session notes should shape the cue.',
+    'Client context is durable prep from the roster, Notion, or the clinical HUD. Use it to choose the best empathic reflection, question, repair, or next move.',
+    'Conversation dynamics show whether Jonathan should listen longer, repair, clarify, slow down, ask a sharper question, or name a feeling.',
+    'The cue must feel like it belongs to this exact counseling moment, not generic advice.',
+    'Prefer one concrete thing Jonathan can ask, say, notice, or avoid. Keep it clinically grounded and client-centered.',
+    'If the transcript contains a direct question, give a concise answer frame tied to the client goal.',
+    'If the transcript is not a question, cue the next therapeutic move that advances the session goal.',
+    'Do not diagnose, over-pathologize, moralize, or move faster than the client.',
     'Do not mention being an AI. Do not give a long analysis.',
     JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
     'Return JSON only: {"teaser":"...","explanation":"...","sayThis":["..."]}',
@@ -886,17 +888,17 @@ function deterministicCoach(context) {
   if (/\?/.test(context.transcript)) {
     return {
       nudge: {
-        teaser: 'Use the scene goal as the frame.',
-        explanation: `Answer directly, then connect one concrete example to the scene goal.${memoryHint}`
+        teaser: 'Answer with the client goal in view.',
+        explanation: `Respond directly, then return to one empathic question tied to the session goal.${memoryHint}`
       },
-      sayThis: [`The short answer is this: ${topic}.`, 'One example that shows that is...'],
+      sayThis: [`The short answer is this: ${topic}.`, 'What feels most important about that right now?'],
       questionCue
     };
   }
   return {
     nudge: {
-      teaser: 'Move the scene forward.',
-      explanation: `Use the context you set before the session, then ask one short question that narrows ${topic}.${memoryHint}`
+      teaser: 'Offer one grounded next move.',
+      explanation: `Use the pre-session context, reflect what changed, then ask one short question that narrows ${topic}.${memoryHint}`
     },
     sayThis: questionCue.questions.map((question) => question.text).slice(0, 2),
     questionCue
@@ -2191,7 +2193,7 @@ function handleWebSocket(req, socket, url) {
                 transcribeInFlight = false;
               });
           }
-        } else if (audioBytes >= 32000 && now - lastEmit > 5000) {
+        } else if (audioBytes >= 12000 && now - lastEmit > 2500) {
           lastEmit = now;
           sendListeningFallback(socket, { sessionId, source });
         }
