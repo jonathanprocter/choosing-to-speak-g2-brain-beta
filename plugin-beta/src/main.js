@@ -2,6 +2,7 @@ import {
   AudioInputSource,
   CreateStartUpPageContainer,
   OsEventTypeList,
+  RebuildPageContainer,
   TextContainerProperty,
   TextContainerUpgrade,
   waitForEvenAppBridge,
@@ -9,7 +10,7 @@ import {
 import './style.css';
 import { formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
 
-const VERSION = '0.1.49';
+const VERSION = '0.1.50';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';
@@ -20,35 +21,40 @@ const HUD_ZONES = {
   far: {
     containerID: 1,
     containerName: 'zone-far',
-    xPosition: 0,
+    xPosition: 16,
     yPosition: 0,
-    width: 576,
-    height: 80,
-    paddingLength: 4,
+    width: 544,
+    height: 76,
+    paddingLength: 12,
+    borderColor: 6,
     isEventCapture: 0,
   },
   mid: {
     containerID: 2,
     containerName: 'zone-mid',
-    xPosition: 0,
-    yPosition: 80,
-    width: 576,
+    xPosition: 16,
+    yPosition: 84,
+    width: 544,
     height: 112,
-    paddingLength: 6,
+    paddingLength: 8,
+    borderColor: 10,
     isEventCapture: 1,
   },
   near: {
     containerID: 3,
     containerName: 'zone-near',
-    xPosition: 0,
-    yPosition: 192,
-    width: 576,
-    height: 96,
-    paddingLength: 6,
+    xPosition: 16,
+    yPosition: 204,
+    width: 544,
+    height: 84,
+    paddingLength: 8,
+    borderColor: 15,
     isEventCapture: 0,
   },
 };
 const HUD_ZONE_ORDER = ['far', 'mid', 'near'];
+const FOCUS_BORDER_COLOR = 13;
+const FOCUS_BORDER_WIDTH = 2;
 const CUE_TTL_MS = 6500;
 const COACH_MIN_CHARS = 38;
 const COACH_INTERVAL_MS = 9000;
@@ -100,6 +106,8 @@ const state = {
   lastHudZones: {},
   renderInFlight: false,
   renderQueued: false,
+  focusedHudZone: 'mid',
+  structuralHudUpdates: true,
 };
 
 const logLines = [];
@@ -230,28 +238,53 @@ function validToken(value) {
 
 async function createStartupPage() {
   const zones = normalizeHudZoneContent(formatHudZones(state));
+  const focusedZone = getFocusedHudZone(Date.now());
   const result = await state.bridge.createStartUpPageContainer(new CreateStartUpPageContainer({
     containerTotalNum: HUD_ZONE_ORDER.length,
-    textObject: HUD_ZONE_ORDER.map((zone) => buildHudContainer(zone, zones[zone])),
+    textObject: HUD_ZONE_ORDER.map((zone) => buildHudContainer(zone, zones[zone], focusedZone)),
   }));
   state.startupCreated = result === 0;
   state.lastHudZones = zones;
+  state.focusedHudZone = focusedZone;
   log('createStartUpPageContainer result', { result });
   if (!state.startupCreated) throw new Error(`G2 page create failed: ${result}`);
 }
 
-function buildHudContainer(zone, content) {
+function buildHudContainer(zone, content, focusedZone = state.focusedHudZone) {
   const spec = HUD_ZONES[zone];
+  const isFocused = zone === focusedZone && state.structuralHudUpdates;
   return new TextContainerProperty({
     ...spec,
-    borderWidth: 0,
-    borderColor: 15,
+    borderWidth: isFocused ? FOCUS_BORDER_WIDTH : 1,
+    borderColor: isFocused ? FOCUS_BORDER_COLOR : spec.borderColor,
+    borderRadius: 4,
+    borderRdaius: '4',
     content: content || ' ',
   });
 }
 
 function normalizeHudZoneContent(zones) {
   return Object.fromEntries(HUD_ZONE_ORDER.map((zone) => [zone, zones[zone] || ' ']));
+}
+
+function getFocusedHudZone(now = Date.now()) {
+  return state.cue && now < state.cueExpiresAt ? 'near' : 'mid';
+}
+
+async function rebuildHudPage(zones, focusedZone) {
+  if (!state.structuralHudUpdates) return false;
+  try {
+    const result = await state.bridge.rebuildPageContainer(new RebuildPageContainer({
+      containerTotalNum: HUD_ZONE_ORDER.length,
+      textObject: HUD_ZONE_ORDER.map((zone) => buildHudContainer(zone, zones[zone], focusedZone)),
+    }));
+    if (result === true || result === 0) return true;
+    log('hud rebuild unavailable', { result });
+  } catch (error) {
+    log('hud rebuild failed', { error: String(error?.message || error) });
+  }
+  state.structuralHudUpdates = false;
+  return false;
 }
 
 function handleEvenHubEvent(event) {
@@ -748,7 +781,14 @@ async function renderGlasses() {
   try {
     do {
       state.renderQueued = false;
-      const zones = normalizeHudZoneContent(formatHudZones(state));
+      const now = Date.now();
+      const zones = normalizeHudZoneContent(formatHudZones(state, now));
+      const focusedZone = getFocusedHudZone(now);
+      if (focusedZone !== state.focusedHudZone && await rebuildHudPage(zones, focusedZone)) {
+        state.lastHudZones = zones;
+        state.focusedHudZone = focusedZone;
+        continue;
+      }
       for (const zone of HUD_ZONE_ORDER) {
         const content = zones[zone];
         if (content === state.lastHudZones[zone]) continue;
@@ -761,6 +801,7 @@ async function renderGlasses() {
         }));
       }
       state.lastHudZones = zones;
+      state.focusedHudZone = focusedZone;
     } while (state.renderQueued);
   } finally {
     state.renderInFlight = false;

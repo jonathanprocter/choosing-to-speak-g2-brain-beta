@@ -1,8 +1,8 @@
 const MAX_G2_CHARS = 620;
 const ZONE_LIMITS = {
-  far: { chars: 120, lines: 3, width: 36 },
-  mid: { chars: 260, lines: 6, width: 34 },
-  near: { chars: 150, lines: 4, width: 31 },
+  far: { chars: 60, lines: 1, width: 36 },
+  mid: { chars: 220, lines: 4, width: 34 },
+  near: { chars: 120, lines: 3, width: 31 },
 };
 const TIME_ZONE = 'America/New_York';
 
@@ -75,7 +75,7 @@ export function formatHudZones(state, now = Date.now()) {
     return zones;
   }
 
-  zones.mid = formatMiddlePlane(state, cue ? 2 : 5);
+  zones.mid = formatMiddlePlane(state, cue ? 2 : 3);
   return zones;
 }
 
@@ -87,7 +87,7 @@ function formatNearPlane(cue, expiresAt, now) {
   return capZone('near', [
     fitLine(`${label} CLOSE ${seconds}S`, 'near'),
     ...takeWrappedLines(title, 'near', 1),
-    ...takeWrappedLines(detail, 'near', 2),
+    ...takeWrappedLines(detail, 'near', 1),
   ]);
 }
 
@@ -109,19 +109,20 @@ function formatMiddlePlane(state, transcriptLines = 2) {
 }
 
 function formatFarPlane(state, now) {
-  const lines = [
-    fitLine(`FAR ${state.live ? 'LIVE' : 'READY'} ${formatTime(now)}`, 'far'),
-    fitLine(formatClientLine(state.client), 'far'),
-  ];
-  const dynamics = formatDynamics(state.dynamics);
-  if (dynamics) lines.push(fitLine(dynamics, 'far'));
-  return capZone('far', lines);
+  const clientLine = formatClientLine(state.client, { includeStart: !state.live });
+  return capZone('far', [
+    [
+      `FAR ${state.live ? 'LIVE' : 'READY'} ${formatTime(now)}`,
+      clientLine,
+      clientLine === 'no client' ? formatTalkRatio(state.dynamics) : '',
+    ].filter(Boolean).join(' '),
+  ]);
 }
 
-function formatClientLine(client) {
-  if (!client?.displayName) return 'No calendar client selected';
-  const starts = client.startsAt ? ` ${formatTime(client.startsAt)}` : '';
-  return `Client ${normalizeText(client.displayName)}${starts}`;
+function formatClientLine(client, { includeStart = true } = {}) {
+  if (!client?.displayName) return 'no client';
+  const starts = includeStart && client.startsAt ? ` ${formatTime(client.startsAt)}` : '';
+  return `${normalizeText(client.displayName)}${starts}`;
 }
 
 function formatDynamics(dynamics) {
@@ -132,6 +133,13 @@ function formatDynamics(dynamics) {
     return `${state || 'listening'} | ${Math.round(clientRatio)} client / ${Math.round(therapistRatio)} you`;
   }
   return state ? `${state} | talk ratio pending` : '';
+}
+
+function formatTalkRatio(dynamics) {
+  const clientRatio = Number(dynamics?.clientRatio || 0);
+  const therapistRatio = Number(dynamics?.therapistRatio || 0);
+  if (!clientRatio && !therapistRatio) return '';
+  return `${Math.round(clientRatio)}C/${Math.round(therapistRatio)}Y`;
 }
 
 function firstContextHint(state) {

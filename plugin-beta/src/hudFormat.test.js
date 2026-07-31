@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { formatHud, formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
 
 const baseState = {
-  version: '0.1.49',
+  version: '0.1.50',
   live: false,
   token: 'vs_live_testtoken000000000000000000000000',
   client: null,
@@ -86,7 +86,7 @@ test('prep context appears before recording starts', () => {
   }, Date.parse('2026-07-31T16:00:00-04:00'));
 
   assert.match(text, /MID PREP/);
-  assert.match(text, /Client Demo Client/);
+  assert.match(text, /Demo Client/);
   assert.match(text, /Transcript default on/);
   assert.match(text, /client question/);
   assertLensSafe(text);
@@ -122,9 +122,9 @@ function assertLensSafe(text) {
 
 function assertZonesSafe(zones) {
   const limits = {
-    near: { chars: 150, lines: 4, width: 31 },
-    mid: { chars: 260, lines: 6, width: 34 },
-    far: { chars: 120, lines: 3, width: 36 },
+    near: { chars: 120, lines: 3, width: 31 },
+    mid: { chars: 220, lines: 4, width: 34 },
+    far: { chars: 60, lines: 1, width: 36 },
   };
   for (const [zone, text] of Object.entries(zones)) {
     const limit = limits[zone];
