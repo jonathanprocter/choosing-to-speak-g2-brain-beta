@@ -66,9 +66,9 @@ https://choosing-to-speak-brain.onrender.com
 wss://choosing-to-speak-brain.onrender.com/v1/transcribe/stream
 ```
 
-The intended custom domain is `speak.procterai.cc`, which is attached in Render but needs Cloudflare DNS pointed at `choosing-to-speak-brain.onrender.com` before verification.
+The intended custom domain is `speak.procterai.cc`, which is attached in Render but needs Cloudflare DNS pointed at `choosing-to-speak-brain.onrender.com` before Render verification. Until that DNS cutover, local `cloudflared` proxies `speak.procterai.cc` to the Render app.
 
-On this Mac, `cloudflared` currently routes `speak.procterai.cc` to `http://localhost:8788`. Start the local backend with the public base URL if you are testing the tunnel route:
+For a local backend tunnel test instead of Render, point the `speak.procterai.cc` ingress rule back to `http://localhost:8788`, then start the backend with the public base URL:
 
 ```bash
 HOST=127.0.0.1 PORT=8788 \
