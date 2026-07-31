@@ -434,19 +434,24 @@ function deterministicCoach(context) {
 }
 
 function extractCoachContext(body) {
-  const recentTurns = Array.isArray(body?.recentTurns)
+  const digest = isRecord(body?.digest) ? body.digest : null;
+  const turnSource = Array.isArray(body?.recentTurns)
     ? body.recentTurns
+    : Array.isArray(digest?.recentTurns)
+      ? digest.recentTurns
+      : [];
+  const recentTurns = turnSource
         .map((turn) => {
           const speaker = cleanText(turn?.speaker || turn?.speakerKind || '');
           const text = cleanText(turn?.text || '');
           return text ? `${speaker ? `${speaker}: ` : ''}${text}` : '';
         })
-        .filter(Boolean)
-    : [];
+        .filter(Boolean);
+  const digestText = typeof body?.digest === 'string' ? body.digest : digest?.windowSummary;
   const transcript = cleanText([
     body?.transcript,
     body?.recentTranscript,
-    body?.digest,
+    digestText,
     recentTurns.join(' ')
   ].filter(Boolean).join(' '));
   const memory = [];

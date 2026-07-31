@@ -75,7 +75,12 @@ try {
       type: 'coach_digest',
       sessionId: 'smoke',
       lensId: 'interview',
-      digest: 'Interviewer: Tell me about a time you handled a hard architecture tradeoff. Candidate: I need to choose an example that shows judgment, scope, and impact.',
+      digest: {
+        recentTurns: [
+          { speaker: 'other', text: 'Tell me about a time you handled a hard architecture tradeoff.', atMs: 1000 },
+          { speaker: 'me', text: 'I need to choose an example that shows judgment, scope, and impact.', atMs: 2000 }
+        ]
+      },
       finalTurnCount: 2,
       memoryContext: {
         items: [{ text: 'Prep goal: emphasize staff-level product judgment and calm communication.' }]
