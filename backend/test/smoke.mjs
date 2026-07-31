@@ -28,6 +28,7 @@ try {
   assert.equal(health.ai.answerGeneration, 'deterministic_fallback');
   assert.equal(health.ai.transcription, 'listening_fallback');
   assert.equal(health.ai.voiceProfile, 'jonathan_live_response');
+  assert.equal(health.ai.coachCueMode, 'contextual_auto_ephemeral');
 
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
@@ -80,6 +81,11 @@ try {
           { speaker: 'other', text: 'Tell me about a time you handled a hard architecture tradeoff.', atMs: 1000 },
           { speaker: 'me', text: 'I need to choose an example that shows judgment, scope, and impact.', atMs: 2000 }
         ]
+      },
+      scene: {
+        title: 'Staff product interview',
+        goal: 'Show calm product judgment, not just technical depth.',
+        boundaries: 'Avoid sounding scattered or over-explaining.'
       },
       finalTurnCount: 2,
       memoryContext: {

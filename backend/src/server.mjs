@@ -11,7 +11,7 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
 const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
 const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 96000);
@@ -141,7 +141,8 @@ function healthPayload() {
     ai: {
       answerGeneration: env.OPENAI_API_KEY ? 'openai' : 'deterministic_fallback',
       transcription: env.OPENAI_API_KEY ? 'openai_audio_transcriptions' : 'listening_fallback',
-      voiceProfile: JONATHAN_VOICE_ENABLED ? 'jonathan_live_response' : 'neutral'
+      voiceProfile: JONATHAN_VOICE_ENABLED ? 'jonathan_live_response' : 'neutral',
+      coachCueMode: 'contextual_auto_ephemeral'
     }
   };
 }
@@ -358,15 +359,19 @@ async function askOpenAI({ question, intent, settings, context }) {
 async function askOpenAICoach(context) {
   const prompt = [
     'You are the Choosing to Speak automatic coaching lane for smart glasses.',
-    'Generate one short, timely coaching nudge based on the recent transcript and any pre-session context.',
-    'Prefer a concrete next thing the wearer can ask, say, or notice.',
+    'Generate one short, timely coaching cue based on the SCENE CONTEXT and the recent transcript.',
+    'Scene context is primary: role, person, goal, vibe, boundaries, risks, and pre-session notes should shape the cue.',
+    'The cue must feel like it belongs to this exact conversation, not generic advice.',
+    'Prefer a concrete next thing the wearer can ask, say, notice, or avoid.',
+    'If the transcript contains an interview-style question, give a concise answer frame tied to the scene goal.',
+    'If the transcript is not a question, cue the next conversational move that advances the scene goal.',
     'Do not mention being an AI. Do not give a long analysis.',
     JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
     'Return JSON only: {"teaser":"...","explanation":"...","sayThis":["..."]}',
-    'Constraints: teaser <= 70 characters. explanation <= 220 characters. sayThis has 1-3 speakable lines, each <= 120 characters.',
+    'Constraints: teaser <= 64 characters. explanation <= 180 characters. sayThis has 1-2 speakable lines, each <= 110 characters.',
     `Lens: ${context.lensId || 'default'}`,
     context.sessionLanguage && context.sessionLanguage !== 'en' ? `Language: ${context.sessionLanguage}` : '',
-    context.memory.length ? `Pre-session context:\n${context.memory.map((item) => `- ${item}`).join('\n')}` : '',
+    context.memory.length ? `SCENE CONTEXT:\n${context.memory.map((item) => `- ${item}`).join('\n')}` : '',
     `Recent transcript:\n${context.transcript}`
   ].filter(Boolean).join('\n');
 
@@ -404,9 +409,9 @@ function parseCoachJson(text) {
     return null;
   }
   const teaser = truncate(cleanText(raw.teaser), 70);
-  const explanation = truncate(cleanText(raw.explanation), 220);
+  const explanation = truncate(cleanText(raw.explanation), 180);
   const sayThis = Array.isArray(raw.sayThis)
-    ? raw.sayThis.map((line) => truncate(cleanText(line), 120)).filter(Boolean).slice(0, 3)
+    ? raw.sayThis.map((line) => truncate(cleanText(line), 110)).filter(Boolean).slice(0, 2)
     : [];
   if (!teaser || !explanation) return null;
   return { nudge: { teaser, explanation }, sayThis };
@@ -418,18 +423,18 @@ function deterministicCoach(context) {
   if (/\?/.test(context.transcript)) {
     return {
       nudge: {
-        teaser: 'Answer the question directly.',
-        explanation: `Give the direct answer first, then add one concrete example about ${topic}.${memoryHint}`
+        teaser: 'Use the scene goal as the frame.',
+        explanation: `Answer directly, then connect one concrete example to the scene goal.${memoryHint}`
       },
-      sayThis: [`The short answer is this: ${topic}.`, 'One example is...', 'The tradeoff I see is...']
+      sayThis: [`The short answer is this: ${topic}.`, 'One example that shows that is...']
     };
   }
   return {
     nudge: {
-      teaser: 'Ask one clear follow-up.',
-      explanation: `The transcript has enough context for a useful next move. Ask a short follow-up that narrows ${topic}.${memoryHint}`
+      teaser: 'Move the scene forward.',
+      explanation: `Use the context you set before the session, then ask one short question that narrows ${topic}.${memoryHint}`
     },
-    sayThis: [`What matters most about ${topic} right now?`, 'Can you give me one concrete example?', 'What would make this successful?']
+    sayThis: [`What matters most about ${topic} right now?`, 'Can you give me one concrete example?']
   };
 }
 
@@ -459,11 +464,16 @@ function extractCoachContext(body) {
     body?.activeBriefLabel,
     body?.activeContextSummary,
     body?.context,
+    body?.scene,
+    body?.sessionBlock,
+    body?.currentScene,
     ...(Array.isArray(body?.memoryContext?.items) ? body.memoryContext.items : []),
-    ...(Array.isArray(body?.retrievedMemorySnippets) ? body.retrievedMemorySnippets : [])
+    ...(Array.isArray(body?.retrievedMemorySnippets) ? body.retrievedMemorySnippets : []),
+    ...(Array.isArray(digest?.context) ? digest.context : [])
   ]) {
-    const text = typeof value === 'string' ? cleanText(value) : cleanText(value?.text || value?.summary || value?.label || '');
-    if (text) memory.push(truncate(text, 240));
+    for (const text of extractContextStrings(value)) {
+      if (text) memory.push(truncate(text, 240));
+    }
   }
   return {
     transcript: truncate(transcript, 3000),
@@ -471,6 +481,36 @@ function extractCoachContext(body) {
     lensId: cleanText(body?.lensId || body?.activeLensId || ''),
     sessionLanguage: cleanText(body?.sessionLanguage || '')
   };
+}
+
+function extractContextStrings(value, depth = 0) {
+  if (depth > 2 || value == null) return [];
+  if (typeof value === 'string') {
+    const text = cleanText(value);
+    return text ? [text] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractContextStrings(item, depth + 1)).slice(0, 12);
+  }
+  if (!isRecord(value)) return [];
+  const preferred = [
+    value.title,
+    value.label,
+    value.goal,
+    value.vibe,
+    value.person,
+    value.role,
+    value.scene,
+    value.summary,
+    value.text,
+    value.context,
+    value.boundaries,
+    value.notes,
+    value.risk,
+    value.callbackNotes,
+    value.forbiddenTopics
+  ];
+  return preferred.flatMap((item) => extractContextStrings(item, depth + 1)).slice(0, 12);
 }
 
 function extractOpenAIText(data) {
