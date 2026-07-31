@@ -27,6 +27,7 @@ try {
   assert.equal(health.voiceLock.enabled, false);
   assert.equal(health.ai.answerGeneration, 'deterministic_fallback');
   assert.equal(health.ai.transcription, 'listening_fallback');
+  assert.equal(health.ai.voiceProfile, 'jonathan_live_response');
 
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
@@ -66,6 +67,25 @@ try {
     body: JSON.stringify({ query: 'OpenAI interview', requestId: 'search-smoke' })
   }).then((res) => res.json());
   assert.equal(search.status, 'success');
+
+  const coach = await fetch(`${base}/v1/coach`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      type: 'coach_digest',
+      sessionId: 'smoke',
+      lensId: 'interview',
+      digest: 'Interviewer: Tell me about a time you handled a hard architecture tradeoff. Candidate: I need to choose an example that shows judgment, scope, and impact.',
+      finalTurnCount: 2,
+      memoryContext: {
+        items: [{ text: 'Prep goal: emphasize staff-level product judgment and calm communication.' }]
+      }
+    })
+  }).then((res) => res.json());
+  assert.equal(coach.type, 'coach.result.v1');
+  assert.ok(coach.nudge);
+  assert.equal(typeof coach.nudge.teaser, 'string');
+  assert.ok(Array.isArray(coach.sayThis));
 
   await smokeWebSocketStream({ port, token });
 

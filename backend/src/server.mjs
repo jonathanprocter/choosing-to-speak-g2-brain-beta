@@ -1,6 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { URL } from 'node:url';
+import { JONATHAN_LIVE_RESPONSE_VOICE } from './jonathanVoice.mjs';
 
 const env = process.env;
 const HOST = env.HOST || '127.0.0.1';
@@ -10,7 +11,8 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
+const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
 const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
 const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 96000);
 const WS_TRANSCRIBE_INTERVAL_MS = Number(env.WS_TRANSCRIBE_INTERVAL_MS || 4500);
@@ -104,7 +106,7 @@ async function handleHttp(req, res) {
       handleTranscribe(res, body);
       return;
     case '/v1/coach':
-      handleCoach(res, body);
+      await handleCoach(res, body);
       return;
     case '/v1/debrief':
       handleDebrief(res, body);
@@ -138,7 +140,8 @@ function healthPayload() {
     },
     ai: {
       answerGeneration: env.OPENAI_API_KEY ? 'openai' : 'deterministic_fallback',
-      transcription: env.OPENAI_API_KEY ? 'openai_audio_transcriptions' : 'listening_fallback'
+      transcription: env.OPENAI_API_KEY ? 'openai_audio_transcriptions' : 'listening_fallback',
+      voiceProfile: JONATHAN_VOICE_ENABLED ? 'jonathan_live_response' : 'neutral'
     }
   };
 }
@@ -251,15 +254,33 @@ function handleTranscribe(res, body) {
   sendJson(res, 200, { turns });
 }
 
-function handleCoach(res, body) {
-  const transcript = cleanText(body?.transcript || body?.recentTranscript || '');
-  const nudge = transcript.length > 80
-    ? {
-        teaser: 'Ask one clear follow-up.',
-        explanation: 'The conversation has enough context for a useful next question. Keep it short and specific.'
-      }
-    : null;
-  sendJson(res, 200, { type: 'coach.result.v1', requestId: requestId('coach'), nudge });
+async function handleCoach(res, body) {
+  const started = Date.now();
+  const context = extractCoachContext(body);
+  const requestIdValue = body?.requestId || requestId('coach');
+  if (context.transcript.length < 40 && !context.memory.length) {
+    sendJson(res, 200, { type: 'coach.result.v1', requestId: requestIdValue, nudge: null });
+    return;
+  }
+
+  let result = null;
+  if (env.OPENAI_API_KEY) {
+    result = await askOpenAICoach(context).catch((error) => {
+      console.warn(`OpenAI coach fallback: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+  }
+  if (!result) result = deterministicCoach(context);
+
+  sendJson(res, 200, {
+    type: 'coach.result.v1',
+    requestId: requestIdValue,
+    provider: PROVIDER,
+    modelRoute: `${PUBLIC_BASE_URL}/v1/coach`,
+    latencyMs: Math.max(0, Date.now() - started),
+    nudge: result.nudge,
+    sayThis: result.sayThis
+  });
 }
 
 function handleDebrief(res, body) {
@@ -303,6 +324,7 @@ async function askOpenAI({ question, intent, settings, context }) {
     'You are the Choosing to Speak live conversation brain.',
     'Return only concise coaching text for smart-glasses display.',
     'No markdown fences. No safety boilerplate. No private chain of thought.',
+    JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
     `Intent: ${intent}`,
     `Answer length: ${settings.answerLength}`,
     `Question/transcript: ${question}`,
@@ -331,6 +353,119 @@ async function askOpenAI({ question, intent, settings, context }) {
   const text = extractOpenAIText(data);
   if (!text) throw new Error('OpenAI returned no text.');
   return splitPages(text, settings);
+}
+
+async function askOpenAICoach(context) {
+  const prompt = [
+    'You are the Choosing to Speak automatic coaching lane for smart glasses.',
+    'Generate one short, timely coaching nudge based on the recent transcript and any pre-session context.',
+    'Prefer a concrete next thing the wearer can ask, say, or notice.',
+    'Do not mention being an AI. Do not give a long analysis.',
+    JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
+    'Return JSON only: {"teaser":"...","explanation":"...","sayThis":["..."]}',
+    'Constraints: teaser <= 70 characters. explanation <= 220 characters. sayThis has 1-3 speakable lines, each <= 120 characters.',
+    `Lens: ${context.lensId || 'default'}`,
+    context.sessionLanguage && context.sessionLanguage !== 'en' ? `Language: ${context.sessionLanguage}` : '',
+    context.memory.length ? `Pre-session context:\n${context.memory.map((item) => `- ${item}`).join('\n')}` : '',
+    `Recent transcript:\n${context.transcript}`
+  ].filter(Boolean).join('\n');
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      input: prompt,
+      max_output_tokens: 220
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI coach HTTP ${response.status}: ${await response.text()}`);
+  }
+
+  const data = await response.json();
+  const parsed = parseCoachJson(extractOpenAIText(data));
+  if (!parsed) throw new Error('OpenAI returned no coach JSON.');
+  return parsed;
+}
+
+function parseCoachJson(text) {
+  const trimmed = cleanText(String(text || '').replace(/^```(?:json)?/i, '').replace(/```$/i, ''));
+  const match = trimmed.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  let raw;
+  try {
+    raw = JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+  const teaser = truncate(cleanText(raw.teaser), 70);
+  const explanation = truncate(cleanText(raw.explanation), 220);
+  const sayThis = Array.isArray(raw.sayThis)
+    ? raw.sayThis.map((line) => truncate(cleanText(line), 120)).filter(Boolean).slice(0, 3)
+    : [];
+  if (!teaser || !explanation) return null;
+  return { nudge: { teaser, explanation }, sayThis };
+}
+
+function deterministicCoach(context) {
+  const topic = summarizeQuestion(context.transcript || context.memory.join(' '));
+  const memoryHint = context.memory[0] ? ` Tie it to prep: ${truncate(context.memory[0], 90)}` : '';
+  if (/\?/.test(context.transcript)) {
+    return {
+      nudge: {
+        teaser: 'Answer the question directly.',
+        explanation: `Give the direct answer first, then add one concrete example about ${topic}.${memoryHint}`
+      },
+      sayThis: [`The short answer is this: ${topic}.`, 'One example is...', 'The tradeoff I see is...']
+    };
+  }
+  return {
+    nudge: {
+      teaser: 'Ask one clear follow-up.',
+      explanation: `The transcript has enough context for a useful next move. Ask a short follow-up that narrows ${topic}.${memoryHint}`
+    },
+    sayThis: [`What matters most about ${topic} right now?`, 'Can you give me one concrete example?', 'What would make this successful?']
+  };
+}
+
+function extractCoachContext(body) {
+  const recentTurns = Array.isArray(body?.recentTurns)
+    ? body.recentTurns
+        .map((turn) => {
+          const speaker = cleanText(turn?.speaker || turn?.speakerKind || '');
+          const text = cleanText(turn?.text || '');
+          return text ? `${speaker ? `${speaker}: ` : ''}${text}` : '';
+        })
+        .filter(Boolean)
+    : [];
+  const transcript = cleanText([
+    body?.transcript,
+    body?.recentTranscript,
+    body?.digest,
+    recentTurns.join(' ')
+  ].filter(Boolean).join(' '));
+  const memory = [];
+  for (const value of [
+    body?.activeBriefLabel,
+    body?.activeContextSummary,
+    body?.context,
+    ...(Array.isArray(body?.memoryContext?.items) ? body.memoryContext.items : []),
+    ...(Array.isArray(body?.retrievedMemorySnippets) ? body.retrievedMemorySnippets : [])
+  ]) {
+    const text = typeof value === 'string' ? cleanText(value) : cleanText(value?.text || value?.summary || value?.label || '');
+    if (text) memory.push(truncate(text, 240));
+  }
+  return {
+    transcript: truncate(transcript, 3000),
+    memory: memory.slice(0, 8),
+    lensId: cleanText(body?.lensId || body?.activeLensId || ''),
+    sessionLanguage: cleanText(body?.sessionLanguage || '')
+  };
 }
 
 function extractOpenAIText(data) {
