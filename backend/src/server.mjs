@@ -642,13 +642,14 @@ async function askOpenAICoach(context) {
     'Conversation dynamics show whether Jonathan should listen longer, repair, clarify, slow down, ask a sharper question, or name a feeling.',
     'The cue must feel like it belongs to this exact counseling moment, not generic advice.',
     'Prefer one concrete thing Jonathan can ask, say, notice, or avoid. Keep it clinically grounded and client-centered.',
+    'The visible cue appears as a temporary foreground glasses card, so make it punchy enough to scan without touching the ring or glasses.',
     'If the transcript contains a direct question, give a concise answer frame tied to the client goal.',
     'If the transcript is not a question, cue the next therapeutic move that advances the session goal.',
     'Do not diagnose, over-pathologize, moralize, or move faster than the client.',
     'Do not mention being an AI. Do not give a long analysis.',
     JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
     'Return JSON only: {"teaser":"...","explanation":"...","sayThis":["..."]}',
-    'Constraints: teaser <= 64 characters. explanation <= 180 characters. sayThis has 1-2 speakable lines, each <= 110 characters.',
+    'Constraints: teaser <= 48 characters. explanation <= 135 characters. sayThis has 0-1 speakable lines <= 95 characters.',
     `Lens: ${context.lensId || 'default'}`,
     context.sessionLanguage && context.sessionLanguage !== 'en' ? `Language: ${context.sessionLanguage}` : '',
     context.memory.length ? `SCENE CONTEXT:\n${context.memory.map((item) => `- ${item}`).join('\n')}` : '',
@@ -866,9 +867,9 @@ function parseCoachJson(text) {
     return null;
   }
   const teaser = truncate(cleanText(raw.teaser), 70);
-  const explanation = truncate(cleanText(raw.explanation), 180);
+  const explanation = truncate(cleanText(raw.explanation), 135);
   const sayThis = Array.isArray(raw.sayThis)
-    ? raw.sayThis.map((line) => truncate(cleanText(line), 110)).filter(Boolean).slice(0, 2)
+    ? raw.sayThis.map((line) => truncate(cleanText(line), 95)).filter(Boolean).slice(0, 1)
     : [];
   if (!teaser || !explanation) return null;
   return { nudge: { teaser, explanation }, sayThis };
@@ -879,28 +880,28 @@ function deterministicCoach(context) {
   if (questionCue.source === 'client_context' || questionCue.source === 'dynamics') {
     return {
       nudge: questionCue.nudge,
-      sayThis: questionCue.questions.map((question) => question.text).slice(0, 2),
+      sayThis: questionCue.questions.map((question) => question.text).slice(0, 1),
       questionCue
     };
   }
   const topic = summarizeQuestion(context.transcript || context.memory.join(' '));
-  const memoryHint = context.memory[0] ? ` Tie it to prep: ${truncate(context.memory[0], 90)}` : '';
+  const memoryHint = context.memory[0] ? ` Prep: ${truncate(context.memory[0], 48)}` : '';
   if (/\?/.test(context.transcript)) {
     return {
       nudge: {
-        teaser: 'Answer with the client goal in view.',
-        explanation: `Respond directly, then return to one empathic question tied to the session goal.${memoryHint}`
+        teaser: 'Answer, then return to the goal.',
+        explanation: `Answer briefly, then ask one empathic question tied to the session goal.${memoryHint}`
       },
-      sayThis: [`The short answer is this: ${topic}.`, 'What feels most important about that right now?'],
+      sayThis: [`What feels most important about that right now?`],
       questionCue
     };
   }
   return {
     nudge: {
       teaser: 'Offer one grounded next move.',
-      explanation: `Use the pre-session context, reflect what changed, then ask one short question that narrows ${topic}.${memoryHint}`
+      explanation: `Reflect what changed, then ask one short question that narrows ${topic}.${memoryHint}`
     },
-    sayThis: questionCue.questions.map((question) => question.text).slice(0, 2),
+    sayThis: questionCue.questions.map((question) => question.text).slice(0, 1),
     questionCue
   };
 }
