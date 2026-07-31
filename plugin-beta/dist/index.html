@@ -15,6 +15,15 @@
         };
         window.VelvetSpeakAlphaRuntime = Object.assign({}, window.VelvetSpeakAlphaRuntime || {}, runtime);
         window.__VELVETSPEAK_ALPHA_RUNTIME__ = window.VelvetSpeakAlphaRuntime;
+        window.__VELVETSPEAK_DEBUG_HUD_RENDER__ = true;
+        try {
+          window.localStorage && window.localStorage.setItem("velvetspeakOnboarding.v1", "done");
+          window.localStorage && window.localStorage.setItem(
+            "velvetspeakConsentGate.v1",
+            JSON.stringify({ version: 4, acceptedAtIso: new Date().toISOString() })
+          );
+        } catch (error) {
+        }
       }());
 	    </script>
 	    <script type="module" crossorigin src="/assets/index-choosingToSpeak-c173a7d2.js"></script>
@@ -62,6 +71,48 @@
             delegate = typeof next === "function" ? next.bind(window) : null;
           }
         });
+      }());
+    </script>
+    <script>
+      (function () {
+        if (window.__choosingToSpeakTouchBridgeInstalled) return;
+        window.__choosingToSpeakTouchBridgeInstalled = true;
+        var start = null;
+        function closestAction(target) {
+          return target && target.closest
+            ? target.closest('button:not([disabled]), a[href], [role="button"], [role="tab"]')
+            : null;
+        }
+        document.addEventListener("touchstart", function (event) {
+          var touch = event.changedTouches && event.changedTouches[0];
+          start = touch ? { x: touch.clientX, y: touch.clientY } : null;
+        }, true);
+        document.addEventListener("touchend", function (event) {
+          var touch = event.changedTouches && event.changedTouches[0];
+          if (!touch || !start) return;
+          if (Math.abs(touch.clientX - start.x) > 12 || Math.abs(touch.clientY - start.y) > 12) return;
+          var target = event.target;
+          if (target && target.closest && target.closest("input, select, textarea, label")) return;
+          var action = closestAction(target);
+          if (!action) return;
+          event.preventDefault();
+          event.stopPropagation();
+          window.setTimeout(function () {
+            action.click();
+          }, 0);
+        }, true);
+        var attempts = 0;
+        function autoStartLive() {
+          if (document.querySelector(".live-session-screen")) return;
+          var button = document.querySelector(".live-start-button");
+          if (button && !button.disabled && /start live/i.test(button.textContent || "")) {
+            button.click();
+            return;
+          }
+          attempts += 1;
+          if (attempts < 8) window.setTimeout(autoStartLive, 900);
+        }
+        window.setTimeout(autoStartLive, 1800);
       }());
     </script>
     <script>
