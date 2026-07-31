@@ -5,6 +5,7 @@
 !.env.example
 node_modules/
 coverage/
+backend/data/
 references/
 *.tar
 *.ehpk

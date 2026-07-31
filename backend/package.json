@@ -8,6 +8,9 @@
     "test": "node test/smoke.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.2"
   }
 }

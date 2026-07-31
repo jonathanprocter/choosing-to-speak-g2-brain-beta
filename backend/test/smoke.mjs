@@ -2,20 +2,15 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const port = 8798;
 const token = 'smoke-token';
-const child = spawn(process.execPath, ['src/server.mjs'], {
-  cwd: new URL('..', import.meta.url),
-  env: {
-    ...process.env,
-    HOST: '127.0.0.1',
-    PORT: String(port),
-    VELVETSPEAK_BETA_TOKEN: token,
-    VELVETSPEAK_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`
-  },
-  stdio: ['ignore', 'pipe', 'pipe']
-});
+const tempRoot = await mkdtemp(join(tmpdir(), 'choosing-to-speak-smoke-'));
+const memoryDbPath = join(tempRoot, 'memory.sqlite');
+let child = startServer({ port, token, memoryDbPath });
 
 try {
   await waitForServer(port);
@@ -30,7 +25,9 @@ try {
   assert.equal(health.ai.voiceProfile, 'jonathan_live_response');
   assert.equal(health.ai.coachCueMode, 'contextual_auto_ephemeral');
   assert.equal(health.ai.debrief, 'deterministic_session_intel');
-  assert.equal(health.ai.memorySync, 'in_memory_session_uploads');
+  assert.equal(health.ai.memorySync, 'sqlite_persistent');
+  assert.equal(health.memory.driver, 'sqlite');
+  assert.equal(health.memory.persistent, true);
 
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
@@ -159,17 +156,79 @@ try {
   assert.equal(memoryUpload.ok, true);
   assert.equal(memoryUpload.status, 'uploaded');
 
+  const memoryHealth = await fetch(`${base}/v1/health`).then((res) => res.json());
+  assert.ok(memoryHealth.memory.sessions >= 2);
+  assert.ok(memoryHealth.memory.items >= 2);
+  assert.ok((await stat(memoryDbPath)).size > 0);
+
+  await stopServer(child);
+  child = startServer({ port, token, memoryDbPath });
+  await waitForServer(port);
+
+  const persistedCoach = await fetch(`${base}/v1/coach`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      type: 'coach_digest',
+      sessionId: 'persisted-memory-smoke',
+      lensId: 'interview',
+      transcript: 'Examples?'
+    })
+  }).then((res) => res.json());
+  assert.ok(persistedCoach.nudge);
+  assert.match(persistedCoach.nudge.explanation, /named examples/i);
+
   const memoryPurge = await fetch(`${base}/v1/memory/sessions/memory-smoke`, {
     method: 'DELETE',
     headers
   }).then((res) => res.json());
   assert.equal(memoryPurge.ok, true);
 
+  const memoryPurgeAll = await fetch(`${base}/v1/memory`, {
+    method: 'DELETE',
+    headers
+  }).then((res) => res.json());
+  assert.equal(memoryPurgeAll.ok, true);
+  assert.ok(memoryPurgeAll.purged >= 1);
+
   await smokeWebSocketStream({ port, token });
 
   console.log('Smoke tests passed');
 } finally {
-  child.kill('SIGTERM');
+  await stopServer(child);
+  await rm(tempRoot, { recursive: true, force: true });
+}
+
+function startServer({ port, token, memoryDbPath }) {
+  return spawn(process.execPath, ['src/server.mjs'], {
+    cwd: new URL('..', import.meta.url),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      VELVETSPEAK_BETA_TOKEN: token,
+      VELVETSPEAK_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+      OPENAI_API_KEY: '',
+      MEMORY_DB_PATH: memoryDbPath,
+      MEMORY_MAX_SESSIONS: '20'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+}
+
+function stopServer(child) {
+  if (!child || child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      if (child.exitCode === null) child.kill('SIGKILL');
+      resolve();
+    }, 2000);
+    child.once('exit', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.kill('SIGTERM');
+  });
 }
 
 function waitForServer(port) {

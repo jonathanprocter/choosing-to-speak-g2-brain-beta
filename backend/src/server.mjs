@@ -2,6 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { URL } from 'node:url';
 import { JONATHAN_LIVE_RESPONSE_VOICE } from './jonathanVoice.mjs';
+import { createMemoryStore } from './memoryStore.mjs';
 
 const env = process.env;
 const HOST = env.HOST || '127.0.0.1';
@@ -11,15 +12,18 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
+const MEMORY_DB_PATH = env.MEMORY_DB_PATH || env.SQLITE_DB_PATH || new URL('../data/choosing-to-speak-memory.sqlite', import.meta.url).pathname;
+const MEMORY_MAX_SESSIONS = env.MEMORY_MAX_SESSIONS || 500;
 const WS_HEARTBEAT_INTERVAL_MS = Number(env.WS_HEARTBEAT_INTERVAL_MS || 30000);
 const WS_TRANSCRIBE_MIN_BYTES = Number(env.WS_TRANSCRIBE_MIN_BYTES || 96000);
 const WS_TRANSCRIBE_INTERVAL_MS = Number(env.WS_TRANSCRIBE_INTERVAL_MS || 4500);
 const WS_TRANSCRIBE_MAX_BYTES = Number(env.WS_TRANSCRIBE_MAX_BYTES || 384000);
 const SHUTDOWN_TIMEOUT_MS = Number(env.SHUTDOWN_TIMEOUT_MS || 25000);
 const sockets = new Set();
-const memorySessions = new Map();
+const memoryStore = createMemoryStore({ dbPath: MEMORY_DB_PATH, maxSessions: MEMORY_MAX_SESSIONS });
+let memoryStoreClosed = false;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -50,6 +54,7 @@ server.listen(PORT, HOST, () => {
   console.log(`VoiceLock: disabled`);
   console.log(`OpenAI: ${env.OPENAI_API_KEY ? `enabled (${OPENAI_MODEL})` : 'disabled; deterministic fallback'}`);
   console.log(`OpenAI transcription: ${env.OPENAI_API_KEY ? `enabled (${OPENAI_TRANSCRIBE_MODEL})` : 'disabled; listening fallback'}`);
+  console.log(`Memory DB: ${memoryStore.dbPath}`);
 });
 
 process.once('SIGTERM', () => shutdown('SIGTERM'));
@@ -57,13 +62,25 @@ process.once('SIGINT', () => shutdown('SIGINT'));
 
 function shutdown(signal) {
   console.log(`${signal} received; closing Choosing to Speak brain backend.`);
-  server.close(() => process.exit(0));
+  server.close(() => {
+    closeMemoryStore();
+    process.exit(0);
+  });
   for (const socket of sockets) {
     if (!socket.destroyed) {
       socket.end(encodeWsFrame(Buffer.from([0x03, 0xe9]), 8));
     }
   }
-  setTimeout(() => process.exit(0), SHUTDOWN_TIMEOUT_MS).unref();
+  setTimeout(() => {
+    closeMemoryStore();
+    process.exit(0);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
+}
+
+function closeMemoryStore() {
+  if (memoryStoreClosed) return;
+  memoryStoreClosed = true;
+  memoryStore.close();
 }
 
 async function handleHttp(req, res) {
@@ -143,6 +160,7 @@ async function handleHttp(req, res) {
 }
 
 function healthPayload() {
+  const memoryStats = memoryStore.stats();
   return {
     ok: true,
     service: 'choosing-to-speak-brain-backend',
@@ -167,8 +185,9 @@ function healthPayload() {
       voiceProfile: JONATHAN_VOICE_ENABLED ? 'jonathan_live_response' : 'neutral',
       coachCueMode: 'contextual_auto_ephemeral',
       debrief: env.OPENAI_API_KEY ? 'openai_session_intel' : 'deterministic_session_intel',
-      memorySync: 'in_memory_session_uploads'
-    }
+      memorySync: 'sqlite_persistent'
+    },
+    memory: memoryStats
   };
 }
 
@@ -364,25 +383,23 @@ function handleMemorySessionUpload(res, body) {
     sendJson(res, 400, { ok: false, error: { code: 'INVALID_SESSION_MEMORY', message: 'Session memory payload was empty or invalid.' } });
     return;
   }
-  memorySessions.set(session.sessionId, session);
-  trimMemorySessions();
+  const stored = memoryStore.upsertSession(session);
   sendJson(res, 200, {
     ok: true,
     status: 'uploaded',
     sessionId: session.sessionId,
-    storedItems: session.items.length
+    storedItems: stored.storedItems
   });
 }
 
 function handleMemoryPurge(res) {
-  const purged = memorySessions.size;
-  memorySessions.clear();
+  const purged = memoryStore.purgeAll();
   sendJson(res, 200, { ok: true, purged });
 }
 
 function handleMemorySessionPurge(res, sessionId) {
   const id = cleanText(sessionId);
-  const purged = id && memorySessions.delete(id) ? 1 : 0;
+  const purged = id ? memoryStore.deleteSession(id) : 0;
   sendJson(res, 200, { ok: true, purged });
 }
 
@@ -923,27 +940,12 @@ function rememberDebrief(input, debrief) {
     items
   });
   if (normalized) {
-    memorySessions.set(normalized.sessionId, normalized);
-    trimMemorySessions();
+    memoryStore.upsertSession(normalized);
   }
 }
 
 function storedMemoryHints({ lensId = '', limit = 6 } = {}) {
-  const wanted = cleanText(lensId).toLowerCase();
-  return [...memorySessions.values()]
-    .filter((session) => !wanted || session.lensId.toLowerCase() === wanted || session.lensId === 'default')
-    .sort((a, b) => Date.parse(b.sessionStartedAt) - Date.parse(a.sessionStartedAt))
-    .flatMap((session) => session.items.map((item) => `${item.kind}: ${item.body}`))
-    .slice(0, limit);
-}
-
-function trimMemorySessions() {
-  const maxSessions = 80;
-  if (memorySessions.size <= maxSessions) return;
-  const oldest = [...memorySessions.values()]
-    .sort((a, b) => Date.parse(a.sessionStartedAt) - Date.parse(b.sessionStartedAt))
-    .slice(0, memorySessions.size - maxSessions);
-  for (const session of oldest) memorySessions.delete(session.sessionId);
+  return memoryStore.hints({ lensId: cleanText(lensId), limit });
 }
 
 function extractContextStrings(value, depth = 0) {
@@ -1213,7 +1215,7 @@ function sendJson(res, status, payload) {
 function writeCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
 }
 
 function handleWebSocket(req, socket, url) {

@@ -13,6 +13,10 @@ It implements the routes the extracted plugin already calls:
 - `POST /v1/coach`
 - `POST /v1/debrief`
 - `POST /v1/coach_review`
+- `POST /v1/memory/enable`
+- `POST /v1/memory/sessions`
+- `DELETE /v1/memory`
+- `DELETE /v1/memory/sessions/:sessionId`
 
 ## Run locally
 
@@ -23,6 +27,14 @@ npm start
 ```
 
 For AI-generated coaching, set `OPENAI_API_KEY` in `.env`. Without it, the service still returns schema-valid deterministic responses so the beta can run end to end.
+
+Session memory is stored in SQLite. Locally it defaults to:
+
+```text
+backend/data/choosing-to-speak-memory.sqlite
+```
+
+Set `MEMORY_DB_PATH` to override it. The health endpoint reports `ai.memorySync=sqlite_persistent` and includes memory row counts.
 
 ## Auth
 
@@ -56,6 +68,15 @@ healthCheckPath: /v1/health
 ```
 
 Render should run the service with `HOST=0.0.0.0` and `VELVETSPEAK_PUBLIC_BASE_URL=https://speak.procterai.cc`.
+
+The Render service also mounts a persistent disk at `/var/data` and sets:
+
+```text
+MEMORY_DB_PATH=/var/data/choosing-to-speak-memory.sqlite
+MEMORY_MAX_SESSIONS=500
+```
+
+Only files written under `/var/data` survive deploys and restarts, so the SQLite database must stay on that mount.
 
 ## Android beta note
 

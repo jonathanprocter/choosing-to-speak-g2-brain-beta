@@ -9,6 +9,10 @@ services:
     startCommand: npm start
     healthCheckPath: /v1/health
     autoDeployTrigger: commit
+    disk:
+      name: choosing-to-speak-memory
+      mountPath: /var/data
+      sizeGB: 1
     domains:
       - speak.procterai.cc
     envVars:
@@ -20,6 +24,10 @@ services:
         value: https://speak.procterai.cc
       - key: OPENAI_MODEL
         value: gpt-4.1-mini
+      - key: MEMORY_DB_PATH
+        value: /var/data/choosing-to-speak-memory.sqlite
+      - key: MEMORY_MAX_SESSIONS
+        value: 500
       - key: WS_HEARTBEAT_INTERVAL_MS
         value: 30000
       - key: SHUTDOWN_TIMEOUT_MS
