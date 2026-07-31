@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { formatHud, normalizeDynamics } from './hudFormat.js';
+import { formatHud, normalizeDynamics, normalizeText } from './hudFormat.js';
 
 const baseState = {
-  version: '0.1.47',
+  version: '0.1.48',
   live: false,
   token: 'vs_live_testtoken000000000000000000000000',
   client: null,
@@ -22,9 +22,10 @@ test('live transcript is the default active plane when no cue is visible', () =>
     transcript: 'The client is describing a difficult conversation with their partner and naming a need for more space.',
   }, Date.parse('2026-07-31T16:00:00-04:00'));
 
-  assert.match(text, /TRANSCRIPT/);
+  assert.match(text, /MID TRANSCRIPT/);
   assert.match(text, /difficult\s+conversation/);
-  assert.match(text, /Counselor cues appear automatically/);
+  assert.match(text, /FAR LIVE/);
+  assertLensSafe(text);
 });
 
 test('foreground counselor cue overrides the top of the HUD and still keeps transcript context', () => {
@@ -33,8 +34,8 @@ test('foreground counselor cue overrides the top of the HUD and still keeps tran
     ...baseState,
     live: true,
     cue: {
-      title: 'Repair before steering',
-      detail: 'Reflect first, then ask one open question tied to the session goal.',
+      title: '**Repair** before steering',
+      detail: '> Reflect first, then ask `one` open question tied to the session goal.',
       plane: 'near',
       source: 'dynamics',
     },
@@ -42,11 +43,12 @@ test('foreground counselor cue overrides the top of the HUD and still keeps tran
     transcript: 'I want to fix this quickly but I can tell I am moving faster than the client.',
   }, now);
 
-  assert.match(text, /\*\*\* COUNSELOR CUE - CLOSE 6S \*\*\*/);
+  assert.match(text, /NEAR COUNSELOR CLOSE 6S/);
   assert.match(text, /REPAIR BEFORE STEERING/);
   assert.match(text, /Reflect first/);
-  assert.match(text, /TRANSCRIPT/);
-  assert.ok(text.length <= 900);
+  assert.match(text, /MID TRANSCRIPT/);
+  assert.doesNotMatch(text, /\*\*|>|`/);
+  assertLensSafe(text);
 });
 
 test('prep context appears before recording starts', () => {
@@ -56,10 +58,11 @@ test('prep context appears before recording starts', () => {
     contextHints: ['client question: What would make this week feel one degree more workable?'],
   }, Date.parse('2026-07-31T16:00:00-04:00'));
 
-  assert.match(text, /READY/);
-  assert.match(text, /Today: Demo Client/);
-  assert.match(text, /TRANSCRIPT DEFAULT: ON/);
+  assert.match(text, /MID PREP/);
+  assert.match(text, /Client Demo Client/);
+  assert.match(text, /Transcript default on/);
   assert.match(text, /client question/);
+  assertLensSafe(text);
 });
 
 test('dynamics normalize safely merges partial updates', () => {
@@ -68,3 +71,19 @@ test('dynamics normalize safely merges partial updates', () => {
     { therapistRatio: 29, clientRatio: 71, conversationalState: 'client_speaking' }
   );
 });
+
+test('normalizeText strips markdown before text reaches the lens', () => {
+  assert.equal(
+    normalizeText('### Header\n- **one** `line` > [link](https://example.com)'),
+    'Header one line link'
+  );
+});
+
+function assertLensSafe(text) {
+  assert.ok(text.length <= 620);
+  assert.ok(text.split('\n').length <= 13);
+  assert.doesNotMatch(text, /[*`>#|]/);
+  for (const line of text.split('\n')) {
+    assert.ok(line.length <= 36, `line too wide: ${line}`);
+  }
+}

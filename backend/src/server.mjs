@@ -676,12 +676,13 @@ async function askOpenAICoach(context) {
     'If the transcript is not a question, cue the next therapeutic move that advances the session goal.',
     'Do not diagnose, over-pathologize, moralize, or move faster than the client.',
     'Do not mention being an AI. Do not give a long analysis.',
+    'Visible glasses text must be plain text only: no Markdown, bullets, headings, bold, italics, backticks, blockquotes, links, or numbered lists.',
     JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
     'Return JSON only: {"teaser":"...","explanation":"...","sayThis":["..."]}',
-    'Constraints: teaser <= 48 characters. explanation <= 135 characters. sayThis has 0-1 speakable lines <= 95 characters.',
+    'Constraints: teaser <= 34 characters. explanation <= 110 characters. sayThis has 0-1 plain line <= 78 characters.',
     `Lens: ${context.lensId || 'default'}`,
     context.sessionLanguage && context.sessionLanguage !== 'en' ? `Language: ${context.sessionLanguage}` : '',
-    context.memory.length ? `SCENE CONTEXT:\n${context.memory.map((item) => `- ${item}`).join('\n')}` : '',
+    context.memory.length ? `SCENE CONTEXT: ${context.memory.map((item) => cleanText(item)).join(' | ')}` : '',
     context.clientContext?.hints ? `Client context used: ${context.clientContext.hints} hint(s)` : '',
     context.dynamics ? `Dynamics: ${JSON.stringify(context.dynamics)}` : '',
     `Recent transcript:\n${context.transcript}`
@@ -895,10 +896,10 @@ function parseCoachJson(text) {
   } catch {
     return null;
   }
-  const teaser = truncate(cleanText(raw.teaser), 70);
-  const explanation = truncate(cleanText(raw.explanation), 135);
+  const teaser = truncate(cleanText(raw.teaser), 42);
+  const explanation = truncate(cleanText(raw.explanation), 110);
   const sayThis = Array.isArray(raw.sayThis)
-    ? raw.sayThis.map((line) => truncate(cleanText(line), 95)).filter(Boolean).slice(0, 1)
+    ? raw.sayThis.map((line) => truncate(cleanText(line), 78)).filter(Boolean).slice(0, 1)
     : [];
   if (!teaser || !explanation) return null;
   return { nudge: { teaser, explanation }, sayThis };
@@ -1830,8 +1831,8 @@ function cuePayload({ source, teaser, explanation, question, reason, modality, t
     expiresAt,
     deliveryAction: 'cue',
     nudge: {
-      teaser: truncate(cleanText(teaser), 64),
-      explanation: truncate(cleanText(explanation), 180)
+      teaser: truncate(cleanText(teaser), 42),
+      explanation: truncate(cleanText(explanation), 120)
     },
     questions: [
       {
@@ -2176,7 +2177,24 @@ function summarizeQuestion(text) {
 }
 
 function cleanText(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim();
+  return stripMarkdown(value).replace(/\s+/g, ' ').trim();
+}
+
+function stripMarkdown(value) {
+  return String(value || '')
+    .replace(/```[a-zA-Z0-9_-]*\s*/g, ' ')
+    .replace(/```/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+[.)]\s+/gm, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(\*|_)(.*?)\1/g, '$2')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[>#*`|]/g, ' ');
 }
 
 function truncate(text, max) {

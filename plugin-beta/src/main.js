@@ -9,7 +9,7 @@ import {
 import './style.css';
 import { formatHud, normalizeDynamics, normalizeText } from './hudFormat.js';
 
-const VERSION = '0.1.47';
+const VERSION = '0.1.48';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';

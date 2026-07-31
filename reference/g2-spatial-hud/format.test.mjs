@@ -18,10 +18,11 @@ test('coach dynamics nudge becomes a NEAR alert and overrides the cue slot', () 
   assert.equal(state.lastEventType, 'NEAR');
   assert.equal(state.clientRatio, 72);
   const text = formatGlassesText(state);
-  assert.match(text, /DYNAMICS ALERT/);
-  assert.match(text, /let the pause breathe/);
+  assert.match(text, /NEAR DYNAMICS ALERT/);
+  assert.match(text, /let the\s+pause breathe/);
   assert.match(text, /72% client \/ 28% you/);
   assert.doesNotMatch(text, /protect your Sunday/);
+  assertLensSafe(text);
 });
 
 test('clearing the alert falls back to the MID cue', () => {
@@ -33,16 +34,17 @@ test('clearing the alert falls back to the MID cue', () => {
   });
   state = clearAlert(state);
   const text = formatGlassesText(state);
-  assert.match(text, /CUE/);
-  assert.match(text, /Name the value beneath the struggle/);
+  assert.match(text, /MID CUE/);
+  assert.match(text, /Name the value beneath the\s+struggle/);
+  assertLensSafe(text);
 });
 
-test('question cues fill MID and formatting stays under the 900 char cap', () => {
+test('question cues fill MID and formatting stays lens safe', () => {
   const state = applyQuestionCues(initialState(), {
     questions: [{ text: 'x'.repeat(2000), source: 'client_context' }]
   });
   assert.equal(state.lastEventType, 'MID');
-  assert.ok(formatGlassesText(state).length <= 900);
+  assertLensSafe(formatGlassesText(state));
 });
 
 test('non-dynamics nudge without sayThis lands in the cue slot, not the alert slot', () => {
@@ -53,3 +55,21 @@ test('non-dynamics nudge without sayThis lands in the cue slot, not the alert sl
   assert.equal(state.latestAlert, '');
   assert.match(formatGlassesText(state), /Ask for a named example/);
 });
+
+test('markdown markers are stripped from generated HUD text', () => {
+  const state = applyQuestionCues(initialState(), {
+    questions: [{ text: '### Ask **one** `clear` question', source: 'client_context' }]
+  });
+  const text = formatGlassesText(state);
+  assert.match(text, /Ask one clear question/);
+  assertLensSafe(text);
+});
+
+function assertLensSafe(text) {
+  assert.ok(text.length <= 620);
+  assert.ok(text.split('\n').length <= 12);
+  assert.doesNotMatch(text, /[*`>#|]/);
+  for (const line of text.split('\n')) {
+    assert.ok(line.length <= 36, `line too wide: ${line}`);
+  }
+}
