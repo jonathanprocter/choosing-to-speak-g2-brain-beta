@@ -2,19 +2,30 @@
   "package_id": "cc.procterai.choosingtospeak",
   "edition": "202601",
   "name": "Choosing to Speak",
-  "version": "0.1.45",
+  "version": "0.1.46",
   "min_app_version": "2.0.0",
-  "min_sdk_version": "0.0.12",
+  "min_sdk_version": "0.0.11",
   "entrypoint": "index.html",
   "permissions": [
     {
       "name": "network",
       "desc": "Sends live transcript audio to the Choosing to Speak beta backend.",
-      "whitelist": ["https://speak.procterai.cc"]
+      "whitelist": [
+        "https://api.velvetspeak.com",
+        "wss://api.velvetspeak.com",
+        "https://choosing-to-speak-brain.onrender.com",
+        "wss://choosing-to-speak-brain.onrender.com",
+        "https://speak.procterai.cc",
+        "wss://speak.procterai.cc"
+      ]
     },
     {
       "name": "g2-microphone",
       "desc": "Captures G2 glasses microphone audio for live transcript input."
+    },
+    {
+      "name": "phone-microphone",
+      "desc": "Captures phone microphone audio through the Even Hub SDK when selected in phone app Options."
     }
   ],
   "supported_languages": ["en", "es", "fr", "de", "it", "zh", "ja", "ko"]

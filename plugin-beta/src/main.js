@@ -8,7 +8,7 @@ import {
 } from '@evenrealities/even_hub_sdk';
 import './style.css';
 
-const VERSION = '0.1.45';
+const VERSION = '0.1.46';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';
