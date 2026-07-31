@@ -55,18 +55,20 @@ rootDir: backend
 healthCheckPath: /v1/health
 ```
 
-Render should run the service with `HOST=0.0.0.0` and `VELVETSPEAK_PUBLIC_BASE_URL=https://speak.procterai.cc`.
+Render should run the service with `HOST=0.0.0.0` and `VELVETSPEAK_PUBLIC_BASE_URL=https://speak.procterai.cc`. Until Cloudflare DNS is moved from the tunnel to Render, the plugin can use Render's direct host: `https://choosing-to-speak-brain.onrender.com`.
 
 ## Android beta note
 
-The patched Titan/G2 beta copy is configured for the Cloudflare beta host:
+The patched Titan/G2 beta copy is configured for the always-on Render beta host:
 
 ```text
-https://speak.procterai.cc
-wss://speak.procterai.cc/v1/transcribe/stream
+https://choosing-to-speak-brain.onrender.com
+wss://choosing-to-speak-brain.onrender.com/v1/transcribe/stream
 ```
 
-On this Mac, `cloudflared` routes that hostname to `http://localhost:8788`. Start the backend with the public base URL so health responses and model routes match what the plugin sees:
+The intended custom domain is `speak.procterai.cc`, which is attached in Render but needs Cloudflare DNS pointed at `choosing-to-speak-brain.onrender.com` before verification.
+
+On this Mac, `cloudflared` currently routes `speak.procterai.cc` to `http://localhost:8788`. Start the local backend with the public base URL if you are testing the tunnel route:
 
 ```bash
 HOST=127.0.0.1 PORT=8788 \

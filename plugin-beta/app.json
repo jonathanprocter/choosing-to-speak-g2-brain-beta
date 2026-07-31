@@ -13,6 +13,8 @@
       "whitelist": [
         "https://api.velvetspeak.com",
         "wss://api.velvetspeak.com",
+        "https://choosing-to-speak-brain.onrender.com",
+        "wss://choosing-to-speak-brain.onrender.com",
         "https://speak.procterai.cc",
         "wss://speak.procterai.cc",
         "http://127.0.0.1:8788",
