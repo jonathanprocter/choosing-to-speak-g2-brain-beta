@@ -33,6 +33,12 @@ try {
   assert.equal(health.memory.driver, 'sqlite');
   assert.equal(health.memory.persistent, true);
 
+  const streamHint = await fetch(`${base}/v1/transcribe/stream`);
+  assert.equal(streamHint.status, 426);
+  const streamHintBody = await streamHint.json();
+  assert.equal(streamHintBody.error.code, 'UPGRADE_REQUIRED');
+  assert.equal(streamHintBody.stream.authRequired, true);
+
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
     headers,
@@ -442,9 +448,14 @@ async function smokeWebSocketStream({ port, token }) {
   assert.match(headerText, /Sec-WebSocket-Protocol: velvetspeak-stt\.v1/i);
 
   buffer = buffer.subarray(headerEnd + 4);
+
+  const hello = await readServerJson(socket, buffer);
+  assert.equal(hello.type, 'stream.hello');
+  assert.equal(hello.authRequired, true);
+
   socket.write(encodeClientFrame(Buffer.from(JSON.stringify({ type: 'Authenticate', token }), 'utf8'), 1));
 
-  const ready = await readServerJson(socket, buffer);
+  const ready = await readServerJson(socket, Buffer.alloc(0));
   assert.equal(ready.type, 'stream.ready');
   socket.end(encodeClientFrame(Buffer.from([0x03, 0xe8]), 8));
 }

@@ -63,6 +63,25 @@ HOST=127.0.0.1 PORT=8788 \
 
 Some internal identifiers still say `velvetspeak` because the extracted Even/G2 plugin currently depends on those package, runtime, storage, and WebSocket contracts.
 
+## WebSocket Readiness Protocol
+
+`wss://speak.procterai.cc/v1/transcribe/stream` (subprotocol `velvetspeak-stt.v1`) is auth-gated, so a probe that connects and waits silently will time out even when the stream is healthy. The correct readiness sequence is:
+
+1. Connect; the server immediately sends `{"type":"stream.hello","authRequired":true,...}`.
+2. Send `{"type":"Authenticate","token":"<beta token>"}`.
+3. The server replies `{"type":"stream.ready"}`; binary PCM16 mono 16 kHz frames may then be streamed.
+
+A plain HTTPS `GET /v1/transcribe/stream` returns `426 Upgrade Required` with the same instructions, so any HTTP monitor can discover the handshake contract.
+
+## Glasses Explicit Start
+
+The Even-hosted phone WebView does not deliver phone touch events, so `plugin-beta/dist/index.html` adds a glasses-side explicit start path:
+
+- Every Even app message is mirrored to a `ctsEvenAppMessage` window event so page-level code can observe glasses/ring events even after the app bundle installs its own `_listenEvenAppMessage` delegate.
+- A glasses or ring click (`sysEvent.eventType` 0) or double click (3) arms a 1.4 s fallback: if the app's own SDK handler has not started a live session by then, the bridge clicks the visible Start Live button.
+- `window.ChoosingToSpeakStart.start()` triggers the same explicit start manually and `window.ChoosingToSpeakStart.status()` reports hub-event counters for verification.
+- While `__VELVETSPEAK_DEBUG_HUD_RENDER__` is on, a small badge appears after the first hub event showing `hub <count> | clk <clicks>/<doubleClicks> | <source>` — the glasses-side equivalent of the JS touch counter used to prove phone touch was broken.
+
 ## Verify
 
 ```bash

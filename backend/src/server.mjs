@@ -12,7 +12,7 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.5';
+const VERSION = '0.1.6';
 const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
 const MEMORY_DB_PATH = env.MEMORY_DB_PATH || env.SQLITE_DB_PATH || new URL('../data/choosing-to-speak-memory.sqlite', import.meta.url).pathname;
 const MEMORY_MAX_SESSIONS = env.MEMORY_MAX_SESSIONS || 500;
@@ -96,6 +96,27 @@ async function handleHttp(req, res) {
 
   if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/v1/health')) {
     sendJson(res, 200, healthPayload());
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/transcribe/stream') {
+    sendJson(res, 426, {
+      ok: false,
+      error: {
+        code: 'UPGRADE_REQUIRED',
+        message: 'This route is a WebSocket endpoint; connect with a WebSocket client.'
+      },
+      stream: {
+        url: `${PUBLIC_BASE_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/v1/transcribe/stream`,
+        subprotocol: 'velvetspeak-stt.v1',
+        authRequired: Boolean(BETA_TOKEN),
+        readiness: [
+          'On connect the server sends {"type":"stream.hello"} immediately.',
+          'Send {"type":"Authenticate","token":"<beta token>"} to receive {"type":"stream.ready"}.',
+          'A probe that only waits for stream.ready without authenticating will time out by design.'
+        ]
+      }
+    });
     return;
   }
 
@@ -2273,6 +2294,14 @@ function handleWebSocket(req, socket, url) {
     }, WS_HEARTBEAT_INTERVAL_MS);
     heartbeat.unref();
   }
+
+  sendWs(socket, {
+    type: 'stream.hello',
+    service: PROVIDER,
+    version: VERSION,
+    protocol: 'velvetspeak-stt.v1',
+    authRequired: Boolean(BETA_TOKEN)
+  });
 
   if (authed) sendWs(socket, { type: 'stream.ready' });
 
