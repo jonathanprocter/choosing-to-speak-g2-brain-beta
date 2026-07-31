@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- D1: dark is the default theme (decision 6, 2026-07-10) — matches --vs-bg dark. -->
+    <meta name="theme-color" content="#141817" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>VelvetSpeak</title>
+    <script>
+      (function () {
+        var runtime = {
+          backendBaseUrl: "http://127.0.0.1:8788",
+          sessionAuthToken: "velvet-beta-local"
+        };
+        window.VelvetSpeakAlphaRuntime = Object.assign({}, window.VelvetSpeakAlphaRuntime || {}, runtime);
+        window.__VELVETSPEAK_ALPHA_RUNTIME__ = window.VelvetSpeakAlphaRuntime;
+      }());
+    </script>
+    <script type="module" crossorigin src="/assets/index-noVoiceLock-55717813.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-KhSxZnfu.css">
+    <meta name="velvetspeak-beta-release-contract" content="velvetspeak.beta-release-contract.v1;releaseMode=portal-key;clientAuthMode=disabled;consentMode=required;consentVersion=4">
+    <meta name="velvetspeak-language-selection" content="velvetspeak.language-selection.v1;languageSelection=enabled">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function () {
+        if (window.__velvetSpeakEvenAppMessageBootstrapInstalled) return;
+        window.__velvetSpeakEvenAppMessageBootstrapInstalled = true;
+        var delegate = typeof window._listenEvenAppMessage === "function"
+          ? window._listenEvenAppMessage.bind(window)
+          : null;
+        function isRecord(value) {
+          return value && typeof value === "object";
+        }
+        function route(message) {
+          if (!isRecord(message)) return;
+          if (message.method === "evenHubEvent") {
+            var data = isRecord(message.data) && "jsonData" in message.data ? message.data.jsonData : message.data;
+            window.dispatchEvent(new CustomEvent("evenHubEvent", { detail: data }));
+            return;
+          }
+          if (message.method === "deviceStatusChanged") {
+            window.dispatchEvent(new CustomEvent("deviceStatusChanged", { detail: message.data }));
+            return;
+          }
+          if (message.method === "evenAppLaunchSource") {
+            window.dispatchEvent(new CustomEvent("evenAppLaunchSource", { detail: message.data }));
+          }
+        }
+        function listener(message) {
+          if (delegate) return delegate(message);
+          route(message);
+        }
+        Object.defineProperty(window, "_listenEvenAppMessage", {
+          configurable: true,
+          get: function () {
+            return listener;
+          },
+          set: function (next) {
+            delegate = typeof next === "function" ? next.bind(window) : null;
+          }
+        });
+      }());
+    </script>
+  </body>
+</html>

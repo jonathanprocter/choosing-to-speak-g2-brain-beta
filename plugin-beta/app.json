@@ -1,0 +1,30 @@
+{
+  "package_id": "com.velvetspeak.interviewlens",
+  "edition": "202601",
+  "name": "VelvetSpeak",
+  "version": "0.1.23",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.11",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Sends live transcript audio to the VelvetSpeak Alpha backend.",
+      "whitelist": [
+        "https://api.velvetspeak.com",
+        "wss://api.velvetspeak.com",
+        "http://127.0.0.1:8788",
+        "ws://127.0.0.1:8788"
+      ]
+    },
+    {
+      "name": "g2-microphone",
+      "desc": "Captures G2 glasses microphone audio for live transcript input."
+    },
+    {
+      "name": "phone-microphone",
+      "desc": "Captures phone microphone audio through the Even Hub SDK when selected in phone app Options."
+    }
+  ],
+  "supported_languages": ["en", "es", "fr", "de", "it", "zh", "ja", "ko"]
+}
