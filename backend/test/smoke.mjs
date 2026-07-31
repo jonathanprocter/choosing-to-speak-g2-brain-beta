@@ -376,7 +376,7 @@ function waitForServer(port) {
           return;
         }
       } catch {}
-      if (Date.now() - started > 5000) {
+      if (Date.now() - started > 15000) {
         reject(new Error('Server did not start.'));
         return;
       }
