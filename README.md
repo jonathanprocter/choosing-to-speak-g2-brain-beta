@@ -12,18 +12,16 @@ This repo contains the Choosing to Speak G2 beta package and the companion brain
 The current unplugged beta brain host used by the plugin is:
 
 ```text
-https://choosing-to-speak-brain.onrender.com
-wss://choosing-to-speak-brain.onrender.com/v1/transcribe/stream
-```
-
-The intended custom domain is also attached in Render:
-
-```text
 https://speak.procterai.cc
 wss://speak.procterai.cc/v1/transcribe/stream
 ```
 
-`speak.procterai.cc` is currently a Cloudflare Tunnel DNS record. The local `cloudflared` ingress proxies that hostname to the Render app so HTTPS and WSS work, but Render will keep the custom domain marked unverified until Cloudflare DNS is changed from the tunnel CNAME to `choosing-to-speak-brain.onrender.com`.
+Render also exposes the direct service host:
+
+```text
+https://choosing-to-speak-brain.onrender.com
+wss://choosing-to-speak-brain.onrender.com/v1/transcribe/stream
+```
 
 An example of a more permanent cloud host behind Cloudflare would be a small Fly.io Machine, DigitalOcean Droplet, Render service, Railway service, AWS Lightsail/EC2 instance, or GCP Compute Engine VM running this Node backend continuously. Cloudflare can sit in front with DNS proxying or with `cloudflared` installed on that host. For this beta, a regular Node host is simpler than rewriting the live WebSocket brain around Cloudflare Workers/Durable Objects.
 
@@ -36,10 +34,10 @@ An example of a more permanent cloud host behind Cloudflare would be a small Fly
 - root directory: `backend`
 - health check: `/v1/health`
 - direct URL: `https://choosing-to-speak-brain.onrender.com`
-- custom domain: `speak.procterai.cc` after DNS verification
+- custom domain: `speak.procterai.cc`
 - public base URL: `https://speak.procterai.cc`
 
-The Render service and custom domain have been created. Final DNS cutover is to update Cloudflare DNS for `speak.procterai.cc` from the current Cloudflare Tunnel CNAME to `choosing-to-speak-brain.onrender.com`, then verify the custom domain in Render.
+The Render service and custom domain have been created and verified.
 
 ## Unplugged Titan2/G2 Run
 
@@ -51,7 +49,7 @@ HOST=127.0.0.1 PORT=8788 \
   npm start
 ```
 
-The plugin uses `https://choosing-to-speak-brain.onrender.com` and `wss://choosing-to-speak-brain.onrender.com`, so it does not need `adb reverse` when the phone has internet.
+The plugin uses `https://speak.procterai.cc` and `wss://speak.procterai.cc`, so it does not need `adb reverse` when the phone has internet.
 
 For a plugged-in development run, switch the runtime URL back to `http://127.0.0.1:8788` and run:
 

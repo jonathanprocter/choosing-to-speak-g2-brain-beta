@@ -55,18 +55,18 @@ rootDir: backend
 healthCheckPath: /v1/health
 ```
 
-Render should run the service with `HOST=0.0.0.0` and `VELVETSPEAK_PUBLIC_BASE_URL=https://speak.procterai.cc`. Until Cloudflare DNS is moved from the tunnel to Render, the plugin can use Render's direct host: `https://choosing-to-speak-brain.onrender.com`.
+Render should run the service with `HOST=0.0.0.0` and `VELVETSPEAK_PUBLIC_BASE_URL=https://speak.procterai.cc`.
 
 ## Android beta note
 
 The patched Titan/G2 beta copy is configured for the always-on Render beta host:
 
 ```text
-https://choosing-to-speak-brain.onrender.com
-wss://choosing-to-speak-brain.onrender.com/v1/transcribe/stream
+https://speak.procterai.cc
+wss://speak.procterai.cc/v1/transcribe/stream
 ```
 
-The intended custom domain is `speak.procterai.cc`, which is attached in Render but needs Cloudflare DNS pointed at `choosing-to-speak-brain.onrender.com` before Render verification. Until that DNS cutover, local `cloudflared` proxies `speak.procterai.cc` to the Render app.
+The direct Render host remains available at `https://choosing-to-speak-brain.onrender.com`.
 
 For a local backend tunnel test instead of Render, point the `speak.procterai.cc` ingress rule back to `http://localhost:8788`, then start the backend with the public base URL:
 
