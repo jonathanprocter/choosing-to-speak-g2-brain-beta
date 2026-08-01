@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { formatHud, formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
+import {
+  G2_DISPLAY,
+  HUD_ZONE_LAYOUT,
+  HUD_ZONE_ORDER,
+  ZONE_LIMITS,
+  formatHud,
+  formatHudZones,
+  normalizeDynamics,
+  normalizeText,
+} from './hudFormat.js';
 import { getTextWidth } from '@evenrealities/pretext';
 
 const baseState = {
-  version: '0.1.52',
+  version: '0.1.53',
   live: false,
   token: 'vs_live_testtoken000000000000000000000000',
   client: null,
@@ -16,6 +25,23 @@ const baseState = {
   audioFrames: 0,
 };
 
+test('depth zones fit the physical G2 line-height budget', () => {
+  for (const zone of HUD_ZONE_ORDER) {
+    const spec = HUD_ZONE_LAYOUT[zone];
+    const limit = ZONE_LIMITS[zone];
+    const inset = 2 * ((spec.paddingLength || 0) + (spec.borderWidth || 0));
+    assert.ok(spec.xPosition >= 0, `${zone} x starts off-display`);
+    assert.ok(spec.yPosition >= 0, `${zone} y starts off-display`);
+    assert.ok(spec.xPosition + spec.width <= G2_DISPLAY.width, `${zone} too wide for display`);
+    assert.ok(spec.yPosition + spec.height <= G2_DISPLAY.height, `${zone} too tall for display`);
+    assert.ok(limit.lines * G2_DISPLAY.lineHeightPx <= spec.height - inset, `${zone} line budget clips`);
+    assert.ok(limit.widthPx <= spec.width - inset, `${zone} width budget clips`);
+  }
+  assert.equal(ZONE_LIMITS.far.lines, 1);
+  assert.equal(ZONE_LIMITS.mid.lines, 4);
+  assert.equal(ZONE_LIMITS.near.lines, 3);
+});
+
 test('live transcript is the default active plane when no cue is visible', () => {
   const text = formatHud({
     ...baseState,
@@ -23,9 +49,9 @@ test('live transcript is the default active plane when no cue is visible', () =>
     transcript: 'The client is describing a difficult conversation with their partner and naming a need for more space.',
   }, Date.parse('2026-07-31T16:00:00-04:00'));
 
-  assert.match(text, /MID TRANSCRIPT/);
+  assert.match(text, /TRANSCRIPT/);
   assert.match(text, /difficult\s+conversation/);
-  assert.match(text, /FAR LIVE/);
+  assert.match(text, /LIVE/);
   assertLensSafe(text);
 
   const zones = formatHudZones({
@@ -34,8 +60,8 @@ test('live transcript is the default active plane when no cue is visible', () =>
     transcript: 'The client is describing a difficult conversation with their partner and naming a need for more space.',
   }, Date.parse('2026-07-31T16:00:00-04:00'));
   assert.equal(zones.near, '');
-  assert.match(zones.mid, /MID TRANSCRIPT/);
-  assert.match(zones.far, /FAR LIVE/);
+  assert.match(zones.mid, /TRANSCRIPT/);
+  assert.match(zones.far, /LIVE/);
   assertZonesSafe(zones);
 });
 
@@ -54,10 +80,10 @@ test('foreground counselor cue overrides the top of the HUD and still keeps tran
     transcript: 'I want to fix this quickly but I can tell I am moving faster than the client.',
   }, now);
 
-  assert.match(text, /NEAR COUNSELOR CLOSE 6S/);
+  assert.match(text, /COUNSELOR 6S/);
   assert.match(text, /REPAIR BEFORE STEERING/);
   assert.match(text, /Reflect first/);
-  assert.match(text, /MID TRANSCRIPT/);
+  assert.match(text, /TRANSCRIPT/);
   assert.doesNotMatch(text, /\*\*|>|`/);
   assertLensSafe(text);
 
@@ -73,9 +99,9 @@ test('foreground counselor cue overrides the top of the HUD and still keeps tran
     cueExpiresAt: now + 6000,
     transcript: 'I want to fix this quickly but I can tell I am moving faster than the client.',
   }, now);
-  assert.match(zones.near, /NEAR COUNSELOR CLOSE 6S/);
-  assert.match(zones.mid, /MID TRANSCRIPT/);
-  assert.match(zones.far, /FAR LIVE/);
+  assert.match(zones.near, /COUNSELOR 6S/);
+  assert.match(zones.mid, /TRANSCRIPT/);
+  assert.match(zones.far, /LIVE/);
   assertZonesSafe(zones);
 });
 
@@ -86,7 +112,7 @@ test('prep context appears before recording starts', () => {
     contextHints: ['client question: What would make this week feel one degree more workable?'],
   }, Date.parse('2026-07-31T16:00:00-04:00'));
 
-  assert.match(text, /MID PREP/);
+  assert.match(text, /PREP/);
   assert.match(text, /Demo Client/);
   assert.match(text, /Transcript default on/);
   assert.match(text, /client question/);
@@ -125,7 +151,7 @@ test('mid-plane cue renders inside MID alongside the transcript tail, NEAR stays
     transcript: 'The client mentioned the schedule change at work again.',
   }, now);
   assert.equal(zones.near, '');
-  assert.match(zones.mid, /MID CUE 6S/);
+  assert.match(zones.mid, /CUE 6S/);
   assert.match(zones.mid, /OPEN QUESTION/);
   assert.match(zones.mid, /what changed/);
   assertZonesSafe(zones);
@@ -142,9 +168,9 @@ test('two-slot cues render both planes at once without eviction', () => {
     },
     transcript: 'Transcript context continues here.',
   }, now);
-  assert.match(zones.near, /NEAR COUNSELOR/);
+  assert.match(zones.near, /COUNSELOR/);
   assert.match(zones.near, /SLOW DOWN/);
-  assert.match(zones.mid, /MID CUE/);
+  assert.match(zones.mid, /CUE/);
   assert.match(zones.mid, /OPEN QUESTION/);
   assertZonesSafe(zones);
 });
@@ -160,7 +186,7 @@ test('scroll review shows one remembered turn with position and speaker', () => 
     ],
     transcript: 'live tail should not render during review',
   }, Date.parse('2026-07-31T16:00:00-04:00'));
-  assert.match(zones.mid, /MID REVIEW 1\/2/);
+  assert.match(zones.mid, /REVIEW 1\/2/);
   assert.match(zones.mid, /C: I keep replaying/);
   assert.doesNotMatch(zones.mid, /live tail/);
   assertZonesSafe(zones);
@@ -174,11 +200,11 @@ test('cue countdown renders in 2-second steps so off-step ticks are BLE no-ops',
     cues: { near: { ...cue, expiresAt: now + msLeft }, mid: null },
     transcript: 'context',
   }, now).near;
-  assert.match(at(6000), /CLOSE 6S/);
-  assert.match(at(5000), /CLOSE 6S/);
-  assert.match(at(4000), /CLOSE 4S/);
-  assert.match(at(3000), /CLOSE 4S/);
-  assert.match(at(1500), /CLOSE 2S/);
+  assert.match(at(6000), /COUNSELOR 6S/);
+  assert.match(at(5000), /COUNSELOR 6S/);
+  assert.match(at(4000), /COUNSELOR 4S/);
+  assert.match(at(3000), /COUNSELOR 4S/);
+  assert.match(at(1500), /COUNSELOR 2S/);
 });
 
 function assertLensSafe(text) {
@@ -191,13 +217,8 @@ function assertLensSafe(text) {
 }
 
 function assertZonesSafe(zones) {
-  const limits = {
-    near: { chars: 150, lines: 3, widthPx: 460 },
-    mid: { chars: 260, lines: 4, widthPx: 510 },
-    far: { chars: 80, lines: 1, widthPx: 500 },
-  };
   for (const [zone, text] of Object.entries(zones)) {
-    const limit = limits[zone];
+    const limit = ZONE_LIMITS[zone];
     assert.ok(text.length <= limit.chars, `${zone} too long`);
     assert.ok(text.split('\n').length <= limit.lines, `${zone} too tall`);
     assert.doesNotMatch(text, /[*`>#|]/);

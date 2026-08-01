@@ -7,51 +7,16 @@ import {
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk';
 import './style.css';
-import { formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
+import { HUD_ZONE_LAYOUT, HUD_ZONE_ORDER, formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
 
-const VERSION = '0.1.52';
+const VERSION = '0.1.53';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';
 const DEVICE_ID_KEY = 'ctsDeviceId.v1';
 const PACKAGE_ID = 'cc.procterai.choosingtospeak';
 const LENS_ID = 'clinical';
-const HUD_ZONES = {
-  far: {
-    containerID: 1,
-    containerName: 'zone-far',
-    xPosition: 16,
-    yPosition: 0,
-    width: 544,
-    height: 76,
-    paddingLength: 12,
-    borderColor: 6,
-    isEventCapture: 0,
-  },
-  mid: {
-    containerID: 2,
-    containerName: 'zone-mid',
-    xPosition: 16,
-    yPosition: 84,
-    width: 544,
-    height: 112,
-    paddingLength: 8,
-    borderColor: 10,
-    isEventCapture: 1,
-  },
-  near: {
-    containerID: 3,
-    containerName: 'zone-near',
-    xPosition: 16,
-    yPosition: 204,
-    width: 544,
-    height: 84,
-    paddingLength: 8,
-    borderColor: 15,
-    isEventCapture: 0,
-  },
-};
-const HUD_ZONE_ORDER = ['far', 'mid', 'near'];
+const HUD_ZONES = HUD_ZONE_LAYOUT;
 const CUE_TTL_MS = 6500;
 const COACH_MIN_CHARS = 38;
 const COACH_INTERVAL_MS = 9000;
@@ -260,8 +225,6 @@ function buildHudContainer(zone, content) {
   const spec = HUD_ZONES[zone];
   return new TextContainerProperty({
     ...spec,
-    borderWidth: 1,
-    borderColor: spec.borderColor,
     content: content || ' ',
   });
 }

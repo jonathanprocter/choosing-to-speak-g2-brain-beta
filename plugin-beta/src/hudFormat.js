@@ -1,13 +1,69 @@
 import { getTextWidth, pxTruncate } from '@evenrealities/pretext';
 
-const MAX_G2_CHARS = 620;
-// widthPx = usable pixel width per zone (544px container minus padding and a
-// safety gutter), measured with the same LVGL metrics Even Hub renders with.
-const ZONE_LIMITS = {
-  far: { chars: 80, lines: 1, widthPx: 500 },
-  mid: { chars: 260, lines: 4, widthPx: 510 },
-  near: { chars: 150, lines: 3, widthPx: 460 },
+export const G2_DISPLAY = {
+  width: 576,
+  height: 288,
+  lineHeightPx: 27,
+  safetyGutterPx: 10,
 };
+
+export const HUD_ZONE_ORDER = ['far', 'mid', 'near'];
+
+// Semantic depth planes mapped onto the documented 2D G2 display. These
+// dimensions are chosen so each zone's text budget fits the actual LVGL line
+// height instead of relying on approximate character counts.
+export const HUD_ZONE_LAYOUT = {
+  far: {
+    containerID: 1,
+    containerName: 'zone-far',
+    xPosition: 32,
+    yPosition: 0,
+    width: 512,
+    height: 44,
+    paddingLength: 4,
+    borderWidth: 0,
+    borderColor: 6,
+    isEventCapture: 0,
+  },
+  mid: {
+    containerID: 2,
+    containerName: 'zone-mid',
+    xPosition: 24,
+    yPosition: 56,
+    width: 528,
+    height: 126,
+    paddingLength: 8,
+    borderWidth: 1,
+    borderColor: 10,
+    isEventCapture: 1,
+  },
+  near: {
+    containerID: 3,
+    containerName: 'zone-near',
+    xPosition: 48,
+    yPosition: 196,
+    width: 480,
+    height: 92,
+    paddingLength: 4,
+    borderWidth: 1,
+    borderColor: 15,
+    isEventCapture: 0,
+  },
+};
+
+const MAX_G2_CHARS = 620;
+const ZONE_CHAR_LIMITS = { far: 80, mid: 260, near: 150 };
+export const ZONE_LIMITS = Object.fromEntries(
+  HUD_ZONE_ORDER.map((zone) => {
+    const spec = HUD_ZONE_LAYOUT[zone];
+    const inset = 2 * ((spec.paddingLength || 0) + (spec.borderWidth || 0));
+    return [zone, {
+      chars: ZONE_CHAR_LIMITS[zone],
+      lines: Math.max(1, Math.floor((spec.height - inset) / G2_DISPLAY.lineHeightPx)),
+      widthPx: Math.max(80, spec.width - inset - G2_DISPLAY.safetyGutterPx),
+    }];
+  })
+);
 const TIME_ZONE = 'America/New_York';
 
 export function normalizeText(value) {
@@ -43,7 +99,7 @@ export function normalizeDynamics(value, fallback = {}) {
 
 export function formatHud(state, now = Date.now()) {
   const zones = formatHudZones(state, now);
-  return [zones.near, zones.mid, zones.far]
+  return [zones.far, zones.mid, zones.near]
     .filter((zone) => normalizeText(zone))
     .join('\n\n')
     .slice(0, MAX_G2_CHARS);
@@ -85,7 +141,7 @@ export function formatHudZones(state, now = Date.now()) {
 
   if (!state.token) {
     zones.mid = capZone('mid', [
-      'MID OFFLINE',
+      'OFFLINE',
       ...takeWrappedLines('Backend unreachable. Key enrolls when reachable.', 'mid', 2),
       ...takeWrappedLines('Tap G2 or R1 retries.', 'mid', 1),
     ]);
@@ -95,7 +151,7 @@ export function formatHudZones(state, now = Date.now()) {
   if (!state.live) {
     const prep = firstContextHint(state);
     zones.mid = capZone('mid', [
-      'MID PREP',
+      'PREP',
       'Transcript default on',
       'Auto assist highest',
       ...(prep
@@ -130,7 +186,7 @@ function formatReviewPlane(state) {
   const turn = turns[index];
   const speaker = turn.speakerKind === 'NOT_ME' ? 'C: ' : turn.speakerKind === 'ME' ? 'Y: ' : '';
   return capZone('mid', [
-    `MID REVIEW ${index + 1}/${turns.length}`,
+    `REVIEW ${index + 1}/${turns.length}`,
     ...takeWrappedLines(`${speaker}${turn.text}`, 'mid', 3),
   ]);
 }
@@ -145,11 +201,11 @@ function cueSeconds(expiresAt, now) {
 
 function formatNearPlane(cue, expiresAt, now) {
   const seconds = cueSeconds(expiresAt, now);
-  const label = cue.source === 'client_context' ? 'NEAR PREP' : 'NEAR COUNSELOR';
+  const label = cue.source === 'client_context' ? 'PREP' : 'COUNSELOR';
   const title = normalizeText(cue.title || 'Counselor cue').toUpperCase();
   const detail = normalizeText(cue.detail || cue.sayThis || '');
   return capZone('near', [
-    fitLine(`${label} CLOSE ${seconds}S`, 'near'),
+    fitLine(`${label} ${seconds}S`, 'near'),
     ...takeWrappedLines(title, 'near', 1),
     ...takeWrappedLines(detail, 'near', 1),
   ]);
@@ -163,7 +219,7 @@ function formatMidCuePlane(state, cue, expiresAt, now) {
   const detail = normalizeText(cue.detail || cue.sayThis || '');
   const tail = state.transcript ? lastWrappedLines(state.transcript, 'mid', 1) : [];
   return capZone('mid', [
-    fitLine(`MID CUE ${seconds}S`, 'mid'),
+    fitLine(`CUE ${seconds}S`, 'mid'),
     ...takeWrappedLines(title, 'mid', 1),
     ...takeWrappedLines(detail, 'mid', tail.length ? 1 : 2),
     ...tail,
@@ -173,12 +229,12 @@ function formatMidCuePlane(state, cue, expiresAt, now) {
 function formatMiddlePlane(state, transcriptLines = 2) {
   if (state.transcript) {
     return capZone('mid', [
-      'MID TRANSCRIPT',
+      'TRANSCRIPT',
       ...lastWrappedLines(state.transcript, 'mid', transcriptLines),
     ]);
   }
   return capZone('mid', [
-    'MID TRANSCRIPT',
+    'TRANSCRIPT',
     ...(state.live
       ? takeWrappedLines(state.audioFrames > 0
         ? `Mic frames ${state.audioFrames}. Waiting for speech.`
@@ -191,7 +247,7 @@ function formatFarPlane(state, now) {
   const clientLine = formatClientLine(state.client, { includeStart: !state.live });
   return capZone('far', [
     [
-      `FAR ${state.live ? 'LIVE' : 'READY'} ${formatTime(now)}`,
+      `${state.live ? 'LIVE' : 'READY'} ${formatTime(now)}`,
       clientLine,
       clientLine === 'no client' ? formatTalkRatio(state.dynamics) : '',
     ].filter(Boolean).join(' '),
