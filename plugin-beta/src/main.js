@@ -9,7 +9,7 @@ import {
 import './style.css';
 import { formatHudZones, normalizeDynamics, normalizeText } from './hudFormat.js';
 
-const VERSION = '0.1.51';
+const VERSION = '0.1.52';
 const BACKEND_BASE_URL = 'https://speak.procterai.cc';
 const WS_URL = 'wss://speak.procterai.cc/v1/transcribe/stream';
 const TOKEN_KEY = 'velvetspeakBetaAppKey.v1';
@@ -59,6 +59,11 @@ const QUESTION_CUE_INTERVAL_MS = 14000;
 const CLIENT_REFRESH_INTERVAL_MS = 60000;
 const TIME_ZONE = 'America/New_York';
 const MAX_RECENT_TURNS = 16;
+// ~15s of 16kHz 16-bit mono PCM held while the stream reconnects, so a
+// mid-session drop delays speech instead of losing it.
+const AUDIO_BUFFER_MAX_BYTES = 480000;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const PARTIAL_RENDER_MS = 300;
 
 const phoneLog = document.querySelector('#phone-log');
 const statePill = document.querySelector('#state-pill');
@@ -87,8 +92,10 @@ const state = {
   recentTurns: [],
   sessionStartedAt: 0,
   lastTranscriptAt: 0,
-  cue: null,
-  cueExpiresAt: 0,
+  cues: { near: null, mid: null },
+  cueSignatures: { near: '', mid: '' },
+  cueTicker: null,
+  reviewIndex: null,
   eventCount: 0,
   audioFrames: 0,
   audioBytes: 0,
@@ -96,13 +103,19 @@ const state = {
   coachInFlight: false,
   lastQuestionCueAt: 0,
   questionCueInFlight: false,
-  lastCueSignature: '',
   lastClientRefreshAt: 0,
   clientRefreshTimer: null,
   dynamics: {},
   lastHudZones: {},
   renderInFlight: false,
   renderQueued: false,
+  reconnectAttempts: 0,
+  reconnectTimer: null,
+  audioBuffer: [],
+  audioBufferBytes: 0,
+  lastPartialRenderAt: 0,
+  partialRenderTimer: null,
+  authRecovering: false,
 };
 
 const logLines = [];
@@ -269,15 +282,36 @@ function handleEvenHubEvent(event) {
   const source = event.textEvent ? 'text' : event.sysEvent ? 'sys' : 'unknown';
   log('input event', { source, type: type ?? 'click' });
 
+  // Safety: if the OS is tearing the plugin down, never leave the mic and
+  // stream running in a therapy session. Stop before swallowing the event.
+  if (type === OsEventTypeList.ABNORMAL_EXIT_EVENT || type === OsEventTypeList.SYSTEM_EXIT_EVENT) {
+    if (state.live) {
+      stopLive('system-exit').catch((error) => log('exit stop failed', { error: String(error?.message || error) }));
+    }
+    return;
+  }
   if (isSystemLifecycleEvent(type)) return;
 
   if (type === OsEventTypeList.DOUBLE_CLICK_EVENT) {
+    if (!state.live) return;
     stopLive('double-tap').catch((error) => log('stop failed', { error: String(error?.message || error) }));
+    return;
+  }
+
+  // While live, scroll pages back through remembered turns instead of
+  // aliasing tap: up = older, down = newer, past the newest = back to live.
+  if (state.live && (type === OsEventTypeList.SCROLL_TOP_EVENT || type === OsEventTypeList.SCROLL_BOTTOM_EVENT)) {
+    stepReview(type === OsEventTypeList.SCROLL_TOP_EVENT ? -1 : 1);
     return;
   }
 
   if (isStartOrDismissEvent(type)) {
     if (state.live) {
+      if (state.reviewIndex !== null) {
+        state.reviewIndex = null;
+        renderGlasses();
+        return;
+      }
       dismissCue();
       return;
     }
@@ -287,6 +321,19 @@ function handleEvenHubEvent(event) {
       setStatus('Start failed');
     });
   }
+}
+
+function stepReview(direction) {
+  const turns = state.recentTurns;
+  if (!turns.length) return;
+  if (state.reviewIndex === null) {
+    if (direction > 0) return; // already at the live tail
+    state.reviewIndex = turns.length - 1;
+  } else {
+    const next = state.reviewIndex + direction;
+    state.reviewIndex = next < 0 ? 0 : next >= turns.length ? null : next;
+  }
+  renderGlasses();
 }
 
 async function startLive(reason) {
@@ -315,11 +362,20 @@ async function startLive(reason) {
 
     setStatus('Connecting');
     connectSocket();
-    await waitForSocketReady();
+    try {
+      await waitForSocketReady();
+    } catch (error) {
+      try { state.socket?.close(); } catch {}
+      state.socket = null;
+      throw error;
+    }
     await state.bridge.audioControl(true, AudioInputSource?.Glasses);
     state.live = true;
     state.transcript = '';
     state.recentTurns = [];
+    state.reviewIndex = null;
+    state.audioBuffer = [];
+    state.audioBufferBytes = 0;
     state.sessionStartedAt = Date.now();
     state.audioFrames = 0;
     state.audioBytes = 0;
@@ -347,11 +403,52 @@ async function stopLive(reason) {
       state.socket.close();
     } catch {}
   }
+  const endedAt = Date.now();
+  const shouldSummarize = state.live && state.token && state.recentTurns.length > 0;
   state.live = false;
   state.socketReady = false;
+  state.reviewIndex = null;
+  state.audioBuffer = [];
+  state.audioBufferBytes = 0;
+  state.reconnectAttempts = 0;
+  if (state.reconnectTimer) {
+    window.clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
+  if (state.partialRenderTimer) {
+    window.clearTimeout(state.partialRenderTimer);
+    state.partialRenderTimer = null;
+  }
+  if (shouldSummarize) postSessionSummary(endedAt);
   setCue('STOPPED', 'Tap once before the next conversation.');
   setStatus('Ready');
   log('audio stopped', { reason });
+}
+
+// Fire-and-forget: hand the remembered turns to the backend at session end so
+// a draft note skeleton is waiting on the phone. Never blocks or cues.
+async function postSessionSummary(endedAt) {
+  try {
+    const payload = {
+      ...buildBrainPayload('session-summary'),
+      sessionStartedAt: state.sessionStartedAt ? new Date(state.sessionStartedAt).toISOString() : null,
+      sessionEndedAt: new Date(endedAt).toISOString(),
+      sessionDurationMs: state.sessionStartedAt ? endedAt - state.sessionStartedAt : null,
+    };
+    const response = await fetch(`${BACKEND_BASE_URL}/v1/session_summary`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (response.status === 401 || response.status === 403) {
+      await handleAuthFailure(response.status);
+      return;
+    }
+    if (!response.ok) throw new Error(`session_summary HTTP ${response.status}`);
+    log('session summary posted', { turns: state.recentTurns.length });
+  } catch (error) {
+    log('session summary warning', { error: String(error?.message || error) });
+  }
 }
 
 function connectSocket() {
@@ -364,19 +461,46 @@ function connectSocket() {
   state.socketReady = false;
 
   socket.addEventListener('open', () => {
+    state.reconnectAttempts = 0;
     log('websocket open');
     socket.send(JSON.stringify({ type: 'Authenticate', token: state.token }));
   });
   socket.addEventListener('message', (event) => handleSocketMessage(event.data));
   socket.addEventListener('close', () => {
     state.socketReady = false;
-    if (state.live) setStatus('Reconnecting');
     log('websocket closed');
+    if (state.live) {
+      setStatus('Reconnecting');
+      scheduleReconnect();
+    }
   });
   socket.addEventListener('error', () => {
     state.socketReady = false;
     log('websocket error');
   });
+}
+
+// Previously the UI showed "Reconnecting" but nothing ever reconnected, so a
+// dropped stream mid-session silently killed the transcript until a manual
+// stop/start. Exponential backoff: 0.5s -> 8s cap, only while live.
+function scheduleReconnect() {
+  if (!state.live || state.reconnectTimer) return;
+  if (state.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    log('reconnect abandoned', { attempts: state.reconnectAttempts });
+    stopLive('stream-lost').catch(() => {});
+    setCue('STREAM LOST', 'Tap once to restart the transcript.');
+    setStatus('Stream lost');
+    return;
+  }
+  const delay = Math.min(8000, 500 * 2 ** state.reconnectAttempts);
+  state.reconnectAttempts += 1;
+  log('reconnect scheduled', { attempt: state.reconnectAttempts, delayMs: delay });
+  state.reconnectTimer = window.setTimeout(() => {
+    state.reconnectTimer = null;
+    if (!state.live) return;
+    if (state.socket && state.socket.readyState < WebSocket.CLOSING) return;
+    connectSocket();
+  }, delay);
 }
 
 function waitForSocketReady() {
@@ -405,11 +529,18 @@ function handleSocketMessage(data) {
   }
   log('stream message', { type: frame.type });
   if (frame.type === 'stream.ready' || frame.type === 'stream.hello') {
-    if (frame.type === 'stream.ready') state.socketReady = true;
+    if (frame.type === 'stream.ready') {
+      state.socketReady = true;
+      flushAudioBuffer();
+    }
     renderGlasses();
     return;
   }
   if (frame.type === 'stream.error') {
+    const message = String(frame.message || frame.code || '');
+    if (/auth|token|unauthorized|401|403/i.test(message)) {
+      handleAuthFailure(message);
+    }
     setCue('STREAM ERROR', frame.message || frame.code || 'Transcript stream rejected.');
     setStatus('Stream error');
     return;
@@ -420,12 +551,32 @@ function handleSocketMessage(data) {
     state.transcript = text === 'Listening...' && state.transcript ? state.transcript : text;
     state.lastTranscriptAt = Date.now();
     if (frame.type === 'transcript.final') rememberTurn(frame.turn || frame, text);
-    renderGlasses();
+    // Partials can arrive many times per second; each render is a BLE write.
+    // Coalesce partials to one render per PARTIAL_RENDER_MS; finals render now.
     if (frame.type === 'transcript.final') {
+      renderGlasses();
       maybeCoach();
       maybeQuestionCue('transcript');
+    } else {
+      throttledRender();
     }
   }
+}
+
+function throttledRender() {
+  const now = Date.now();
+  const elapsed = now - state.lastPartialRenderAt;
+  if (elapsed >= PARTIAL_RENDER_MS) {
+    state.lastPartialRenderAt = now;
+    renderGlasses();
+    return;
+  }
+  if (state.partialRenderTimer) return;
+  state.partialRenderTimer = window.setTimeout(() => {
+    state.partialRenderTimer = null;
+    state.lastPartialRenderAt = Date.now();
+    renderGlasses();
+  }, PARTIAL_RENDER_MS - elapsed);
 }
 
 function handleAudioEvent(audioEvent) {
@@ -442,12 +593,44 @@ function handleAudioEvent(audioEvent) {
     }
     return;
   }
-  if (!state.socketReady || !state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+  if (!state.socketReady || !state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    bufferAudioFrame(bytes);
+    return;
+  }
+  flushAudioBuffer();
   state.socket.send(bytes);
   if (state.audioFrames === 1 || state.audioFrames % 50 === 0) {
     log('audio frame sent', { frames: state.audioFrames, kb: Math.round(state.audioBytes / 1024) });
     renderGlasses();
   }
+}
+
+// Ring buffer: keep the newest ~15s of PCM while the stream is down so a
+// reconnect resumes the transcript without a hole in the client's speech.
+function bufferAudioFrame(bytes) {
+  state.audioBuffer.push(bytes);
+  state.audioBufferBytes += bytes.byteLength;
+  while (state.audioBufferBytes > AUDIO_BUFFER_MAX_BYTES && state.audioBuffer.length > 1) {
+    const dropped = state.audioBuffer.shift();
+    state.audioBufferBytes -= dropped.byteLength;
+  }
+}
+
+function flushAudioBuffer() {
+  if (!state.audioBuffer.length) return;
+  if (!state.socketReady || !state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+  const frames = state.audioBuffer;
+  state.audioBuffer = [];
+  state.audioBufferBytes = 0;
+  for (const frame of frames) {
+    try {
+      state.socket.send(frame);
+    } catch (error) {
+      log('buffer flush warning', { error: String(error?.message || error) });
+      return;
+    }
+  }
+  log('buffered audio flushed', { frames: frames.length });
 }
 
 function toBytes(value) {
@@ -501,6 +684,10 @@ async function maybeCoach() {
       headers: authHeaders(),
       body: JSON.stringify(buildBrainPayload('coach')),
     });
+    if (response.status === 401 || response.status === 403) {
+      await handleAuthFailure(response.status);
+      throw new Error(`coach auth ${response.status}`);
+    }
     if (!response.ok) throw new Error(`coach HTTP ${response.status}`);
     const result = await response.json();
     applyBrainCue(result, 'coach');
@@ -530,6 +717,10 @@ async function maybeQuestionCue(reason) {
       headers: authHeaders(),
       body: JSON.stringify(buildBrainPayload(`question-${reason}`)),
     });
+    if (response.status === 401 || response.status === 403) {
+      await handleAuthFailure(response.status);
+      throw new Error(`question_cues auth ${response.status}`);
+    }
     if (!response.ok) throw new Error(`question_cues HTTP ${response.status}`);
     const result = await response.json();
     applyBrainCue(result, `question-${reason}`);
@@ -556,6 +747,10 @@ async function refreshClientContext({ reason = 'manual', silent = false } = {}) 
         dismissedClientIds: state.dismissedClientIds,
       }),
     });
+    if (response.status === 401 || response.status === 403) {
+      await handleAuthFailure(response.status);
+      throw new Error(`client_candidate auth ${response.status}`);
+    }
     if (!response.ok) throw new Error(`client_candidate HTTP ${response.status}`);
     const result = await response.json();
     state.client = result.selected || null;
@@ -716,29 +911,79 @@ function authHeaders() {
 }
 
 function setCue(title, detail, options = {}) {
+  const plane = options.plane === 'near' ? 'near' : 'mid';
   const normalizedTitle = normalizeText(title || 'Counselor cue').toUpperCase().slice(0, 54);
   const normalizedDetail = normalizeText(detail).slice(0, 180);
   const signature = `${normalizedTitle}|${normalizedDetail}`;
-  if (signature === state.lastCueSignature && state.cue && Date.now() < state.cueExpiresAt) return;
-  state.lastCueSignature = signature;
-  state.cue = {
+  const existing = state.cues[plane];
+  if (signature === state.cueSignatures[plane] && existing && Date.now() < existing.expiresAt) return;
+  state.cueSignatures[plane] = signature;
+  // One slot per plane: a NEAR dynamics cue no longer evicts a MID question
+  // cue (or vice versa) — they render in their own zones simultaneously.
+  state.cues[plane] = {
     title: normalizedTitle,
     detail: normalizedDetail,
     source: normalizeText(options.source || ''),
     modality: normalizeText(options.modality || ''),
-    plane: options.plane === 'near' ? 'near' : 'mid',
+    plane,
+    expiresAt: Date.now() + CUE_TTL_MS,
   };
-  state.cueExpiresAt = Date.now() + CUE_TTL_MS;
   renderGlasses();
-  window.setTimeout(() => {
-    if (state.cue && Date.now() >= state.cueExpiresAt) dismissCue();
-  }, CUE_TTL_MS + 100);
+  ensureCueTicker();
+}
+
+// One shared 1s ticker while any cue is visible. The countdown text renders
+// in 2s steps (see hudFormat), so half of these ticks produce identical zone
+// content and are skipped by the BLE diff in renderGlasses.
+function ensureCueTicker() {
+  if (state.cueTicker) return;
+  state.cueTicker = window.setInterval(() => {
+    const now = Date.now();
+    let anyActive = false;
+    for (const plane of ['near', 'mid']) {
+      const slot = state.cues[plane];
+      if (!slot) continue;
+      if (now >= slot.expiresAt) {
+        state.cues[plane] = null;
+      } else {
+        anyActive = true;
+      }
+    }
+    if (!anyActive) {
+      window.clearInterval(state.cueTicker);
+      state.cueTicker = null;
+    }
+    renderGlasses();
+  }, 1000);
 }
 
 function dismissCue() {
-  state.cue = null;
-  state.cueExpiresAt = 0;
+  if (state.cueTicker) {
+    window.clearInterval(state.cueTicker);
+    state.cueTicker = null;
+  }
+  state.cues = { near: null, mid: null };
   renderGlasses();
+}
+
+// Recover from key rotation/revocation: without this, every request fails
+// with 401/403 forever. bootstrapToken is idempotent per device id.
+async function handleAuthFailure(context) {
+  if (state.authRecovering) return;
+  state.authRecovering = true;
+  log('auth failure, re-enrolling key', { context: String(context) });
+  try {
+    state.token = '';
+    writeBrowserStorage(TOKEN_KEY, '');
+    try {
+      await state.bridge.setLocalStorage(TOKEN_KEY, '');
+    } catch {}
+    state.token = await bootstrapToken();
+    state.keyState = state.token ? 'ready' : 'missing';
+    if (!state.token) setStatus('Offline');
+  } finally {
+    state.authRecovering = false;
+  }
 }
 
 async function renderGlasses() {
@@ -757,14 +1002,19 @@ async function renderGlasses() {
         const content = zones[zone];
         if (content === state.lastHudZones[zone]) continue;
         const spec = HUD_ZONES[zone];
-        await state.bridge.textContainerUpgrade(new TextContainerUpgrade({
-          containerID: spec.containerID,
-          containerName: spec.containerName,
-          content,
-          contentLength: 2000,
-        }));
+        try {
+          await state.bridge.textContainerUpgrade(new TextContainerUpgrade({
+            containerID: spec.containerID,
+            containerName: spec.containerName,
+            content,
+            contentLength: 2000,
+          }));
+          // Mark per zone on success only, so a failed zone retries next render
+          state.lastHudZones = { ...state.lastHudZones, [zone]: content };
+        } catch (error) {
+          log('zone render failed', { zone, error: String(error?.message || error) });
+        }
       }
-      state.lastHudZones = zones;
     } while (state.renderQueued);
   } finally {
     state.renderInFlight = false;

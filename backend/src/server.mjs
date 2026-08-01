@@ -190,6 +190,9 @@ async function handleHttp(req, res) {
     case '/v1/memory/sessions':
       handleMemorySessionUpload(res, body);
       return;
+    case '/v1/session_summary':
+      handleSessionSummary(res, body);
+      return;
     case '/v1/client_context':
       handleClientContextUpload(res, body);
       return;
@@ -223,6 +226,7 @@ function healthPayload() {
       coachReview: `${PUBLIC_BASE_URL}/v1/coach_review`,
       questionCues: `${PUBLIC_BASE_URL}/v1/question_cues`,
       memorySessions: `${PUBLIC_BASE_URL}/v1/memory/sessions`,
+      sessionSummary: `${PUBLIC_BASE_URL}/v1/session_summary`,
       clientContext: `${PUBLIC_BASE_URL}/v1/client_context`,
       dayRoster: `${PUBLIC_BASE_URL}/v1/day_roster`,
       clientCandidate: `${PUBLIC_BASE_URL}/v1/client_candidate`,
@@ -453,6 +457,28 @@ function handleMemorySessionUpload(res, body) {
     status: 'uploaded',
     sessionId: session.sessionId,
     storedItems: stored.storedItems
+  });
+}
+
+function handleSessionSummary(res, body) {
+  const session = normalizeSessionSummary(body);
+  if (!session) {
+    sendJson(res, 400, {
+      ok: false,
+      error: {
+        code: 'INVALID_SESSION_SUMMARY',
+        message: 'Session summary needs a session id plus at least one transcript turn, scene, or client context item.'
+      }
+    });
+    return;
+  }
+  const stored = memoryStore.upsertSession(session);
+  sendJson(res, 200, {
+    ok: true,
+    type: 'session_summary.result.v1',
+    sessionId: session.sessionId,
+    storedItems: stored.storedItems,
+    storedAt: session.uploadedAt
   });
 }
 
@@ -1938,6 +1964,62 @@ function normalizeMemorySession(body) {
     uploadedAt: new Date().toISOString(),
     items
   };
+}
+
+function normalizeSessionSummary(body) {
+  const source = isRecord(body?.input) ? body.input : body;
+  if (!isRecord(source)) return null;
+  const selectedClient = isRecord(source.selectedClient)
+    ? source.selectedClient
+    : isRecord(source.clientCandidate)
+      ? source.clientCandidate
+      : {};
+  const sessionId = cleanText(source.sessionId || source.id || source.requestId) || requestId('session-summary');
+  const lensId = cleanText(source.lensId || source.activeLensId || 'clinical') || 'clinical';
+  const sessionStartedAt = normalizeDate(source.sessionStartedAt || source.startedAt || source.createdAt || source.at) || new Date().toISOString();
+  const items = [];
+  const pushItem = (kind, value, max = 600) => {
+    const bodyText = truncate(cleanText(value), max);
+    const itemKind = normalizeItemKind(kind);
+    if (bodyText && itemKind) items.push({ kind: itemKind, body: bodyText });
+  };
+
+  const displayName = cleanText(selectedClient.displayName || selectedClient.clientName || selectedClient.name || '');
+  if (displayName) {
+    const startsAt = normalizeDate(selectedClient.startsAt || selectedClient.startAt || selectedClient.startTime);
+    pushItem('selected_client', [displayName, startsAt ? `starts ${startsAt}` : ''].filter(Boolean).join(' - '), 240);
+  }
+  pushItem('scene', source.currentScene || source.scene || source.context);
+
+  const memoryItems = Array.isArray(source.memoryContext?.items) ? source.memoryContext.items : [];
+  for (const hint of memoryItems.slice(0, 8)) {
+    pushItem('prep_hint', hint);
+  }
+
+  const turns = Array.isArray(source.recentTurns)
+    ? source.recentTurns
+    : Array.isArray(source.turns)
+      ? source.turns
+      : [];
+  turns.slice(-24).forEach((turn, index) => {
+    const text = cleanText(isRecord(turn) ? turn.text || turn.transcript || turn.body || '' : turn);
+    if (!text) return;
+    const speaker = cleanText(turn?.speakerKind || turn?.speaker || turn?.speakerLabel || '').toUpperCase();
+    const kind = speaker === 'ME' || speaker === 'THERAPIST' || speaker === 'CLINICIAN'
+      ? 'therapist_turn'
+      : speaker === 'NOT_ME' || speaker === 'CLIENT' || speaker === 'OTHER'
+        ? 'client_turn'
+        : 'turn';
+    pushItem(kind, `${index + 1}. ${text}`);
+  });
+
+  if (!items.length) pushItem('transcript', source.recentTranscript || source.transcript, 1200);
+  return normalizeMemorySession({
+    sessionId,
+    lensId,
+    sessionStartedAt,
+    items: uniqueClientItems(items).slice(0, 32)
+  });
 }
 
 function rememberDebrief(input, debrief) {

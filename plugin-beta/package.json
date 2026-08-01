@@ -1,14 +1,16 @@
 {
   "name": "choosing-to-speak-g2-plugin",
-  "version": "0.1.51",
+  "version": "0.1.52",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "pack": "npm run build && evenhub pack app.json dist -o ../../choosing-to-speak-0.1.51-safe-depth-zones.ehpk"
+    "pack": "npm run build && evenhub pack app.json dist -o ../../choosing-to-speak-0.1.52-safe-depth-zones.ehpk",
+    "test": "node --test src/hudFormat.test.js"
   },
   "dependencies": {
-    "@evenrealities/even_hub_sdk": "^0.0.11"
+    "@evenrealities/even_hub_sdk": "^0.0.11",
+    "@evenrealities/pretext": "^0.1.4"
   },
   "devDependencies": {
     "@evenrealities/evenhub-cli": "^0.1.13",

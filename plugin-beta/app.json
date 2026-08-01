@@ -2,7 +2,7 @@
   "package_id": "cc.procterai.choosingtospeak",
   "edition": "202601",
   "name": "Choosing to Speak",
-  "version": "0.1.51",
+  "version": "0.1.52",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.11",
   "entrypoint": "index.html",
@@ -28,5 +28,14 @@
       "desc": "Captures phone microphone audio through the Even Hub SDK when selected in phone app Options."
     }
   ],
-  "supported_languages": ["en", "es", "fr", "de", "it", "zh", "ja", "ko"]
+  "supported_languages": [
+    "en",
+    "es",
+    "fr",
+    "de",
+    "it",
+    "zh",
+    "ja",
+    "ko"
+  ]
 }

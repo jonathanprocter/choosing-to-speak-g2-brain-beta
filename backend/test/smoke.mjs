@@ -319,6 +319,29 @@ try {
   assert.equal(clientCoach.clientContextUsed.rosterMatched, true);
   assert.match(clientCoach.sayThis.join(' '), /protect your Sunday/i);
 
+  const sessionSummary = await fetch(`${base}/v1/session_summary`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      sessionId: 'session-summary-smoke',
+      lensId: 'clinical',
+      at: '2026-08-01T03:45:00.000Z',
+      sessionStartedAt: '2026-08-01T03:30:00.000Z',
+      sessionEndedAt: '2026-08-01T03:45:00.000Z',
+      selectedClient: { clientId: 'client-smoke', displayName: 'Smoke Client', startsAt: '2026-08-01T03:30:00.000Z' },
+      currentScene: 'Current client: Smoke Client at 11:30 PM ET. Pre-session prep: protect your Sunday.',
+      recentTurns: [
+        { speakerKind: 'NOT_ME', text: 'My family keeps pushing me and I keep folding.', atMs: 1000, endedAtMs: 8000 },
+        { speakerKind: 'ME', text: 'Let us slow that down.', atMs: 8200, endedAtMs: 9500 }
+      ],
+      memoryContext: { items: ['client summary: Sleep debt raises conflict sensitivity.'] }
+    })
+  }).then((res) => res.json());
+  assert.equal(sessionSummary.ok, true);
+  assert.equal(sessionSummary.type, 'session_summary.result.v1');
+  assert.equal(sessionSummary.sessionId, 'session-summary-smoke');
+  assert.ok(sessionSummary.storedItems >= 4);
+
   const memoryHealth = await fetch(`${base}/v1/health`).then((res) => res.json());
   assert.ok(memoryHealth.memory.sessions >= 2);
   assert.ok(memoryHealth.memory.items >= 2);

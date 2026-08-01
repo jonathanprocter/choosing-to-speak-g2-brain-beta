@@ -1,8 +1,12 @@
+import { getTextWidth, pxTruncate } from '@evenrealities/pretext';
+
 const MAX_G2_CHARS = 620;
+// widthPx = usable pixel width per zone (544px container minus padding and a
+// safety gutter), measured with the same LVGL metrics Even Hub renders with.
 const ZONE_LIMITS = {
-  far: { chars: 60, lines: 1, width: 36 },
-  mid: { chars: 220, lines: 4, width: 34 },
-  near: { chars: 120, lines: 3, width: 31 },
+  far: { chars: 80, lines: 1, widthPx: 500 },
+  mid: { chars: 260, lines: 4, widthPx: 510 },
+  near: { chars: 150, lines: 3, widthPx: 460 },
 };
 const TIME_ZONE = 'America/New_York';
 
@@ -45,12 +49,38 @@ export function formatHud(state, now = Date.now()) {
     .slice(0, MAX_G2_CHARS);
 }
 
+// Two-slot cue model: one active cue per plane. Legacy single-cue state
+// (state.cue / state.cueExpiresAt) is still honored so older callers and
+// tests keep working; legacy cues route by their declared plane.
+function getActiveCues(state, now) {
+  const active = { near: null, mid: null };
+  if (state.cues && typeof state.cues === 'object') {
+    for (const plane of ['near', 'mid']) {
+      const slot = state.cues[plane];
+      if (slot && now < Number(slot.expiresAt || 0)) {
+        active[plane] = { cue: slot, expiresAt: Number(slot.expiresAt) };
+      }
+    }
+    return active;
+  }
+  if (state.cue && now < state.cueExpiresAt) {
+    const plane = state.cue.plane === 'mid' ? 'mid' : 'near';
+    active[plane] = { cue: state.cue, expiresAt: state.cueExpiresAt };
+  }
+  return active;
+}
+
 export function formatHudZones(state, now = Date.now()) {
-  const cue = state.cue && now < state.cueExpiresAt ? state.cue : null;
+  const cues = getActiveCues(state, now);
+  // When not live, a mid-plane cue would collide with the prep/offline block,
+  // so promote it to NEAR (matching the old all-cues-render-near behavior).
+  const nearSlot = cues.near || (!state.live ? cues.mid : null);
+  const midSlot = state.live ? cues.mid : null;
+
   const zones = {
     far: formatFarPlane(state, now),
     mid: '',
-    near: cue ? formatNearPlane(cue, state.cueExpiresAt, now) : '',
+    near: nearSlot ? formatNearPlane(nearSlot.cue, nearSlot.expiresAt, now) : '',
   };
 
   if (!state.token) {
@@ -75,12 +105,46 @@ export function formatHudZones(state, now = Date.now()) {
     return zones;
   }
 
-  zones.mid = formatMiddlePlane(state, cue ? 2 : 3);
+  if (isReviewing(state)) {
+    zones.mid = formatReviewPlane(state);
+    return zones;
+  }
+
+  zones.mid = midSlot
+    ? formatMidCuePlane(state, midSlot.cue, midSlot.expiresAt, now)
+    : formatMiddlePlane(state, nearSlot ? 2 : 3);
   return zones;
 }
 
+function isReviewing(state) {
+  return Number.isInteger(state.reviewIndex)
+    && Array.isArray(state.recentTurns)
+    && state.reviewIndex >= 0
+    && state.reviewIndex < state.recentTurns.length;
+}
+
+// Scroll-back transcript review: MID shows one remembered turn at a time.
+function formatReviewPlane(state) {
+  const turns = state.recentTurns;
+  const index = state.reviewIndex;
+  const turn = turns[index];
+  const speaker = turn.speakerKind === 'NOT_ME' ? 'C: ' : turn.speakerKind === 'ME' ? 'Y: ' : '';
+  return capZone('mid', [
+    `MID REVIEW ${index + 1}/${turns.length}`,
+    ...takeWrappedLines(`${speaker}${turn.text}`, 'mid', 3),
+  ]);
+}
+
+// Countdown renders in 2-second steps (6, 4, 2) so the 1s ticker's off-step
+// renders are content-identical and skipped by the BLE diff — halves the
+// per-cue radio writes without losing the countdown affordance.
+function cueSeconds(expiresAt, now) {
+  const raw = Math.max(1, Math.ceil((expiresAt - now) / 1000));
+  return Math.max(1, Math.ceil(raw / 2) * 2);
+}
+
 function formatNearPlane(cue, expiresAt, now) {
-  const seconds = Math.max(1, Math.ceil((expiresAt - now) / 1000));
+  const seconds = cueSeconds(expiresAt, now);
   const label = cue.source === 'client_context' ? 'NEAR PREP' : 'NEAR COUNSELOR';
   const title = normalizeText(cue.title || 'Counselor cue').toUpperCase();
   const detail = normalizeText(cue.detail || cue.sayThis || '');
@@ -88,6 +152,21 @@ function formatNearPlane(cue, expiresAt, now) {
     fitLine(`${label} CLOSE ${seconds}S`, 'near'),
     ...takeWrappedLines(title, 'near', 1),
     ...takeWrappedLines(detail, 'near', 1),
+  ]);
+}
+
+// Mid-plane cues render inside the MID zone above the live transcript tail,
+// instead of evicting a NEAR cue (or being silently dropped).
+function formatMidCuePlane(state, cue, expiresAt, now) {
+  const seconds = cueSeconds(expiresAt, now);
+  const title = normalizeText(cue.title || 'Counselor cue').toUpperCase();
+  const detail = normalizeText(cue.detail || cue.sayThis || '');
+  const tail = state.transcript ? lastWrappedLines(state.transcript, 'mid', 1) : [];
+  return capZone('mid', [
+    fitLine(`MID CUE ${seconds}S`, 'mid'),
+    ...takeWrappedLines(title, 'mid', 1),
+    ...takeWrappedLines(detail, 'mid', tail.length ? 1 : 2),
+    ...tail,
   ]);
 }
 
@@ -125,16 +204,6 @@ function formatClientLine(client, { includeStart = true } = {}) {
   return `${normalizeText(client.displayName)}${starts}`;
 }
 
-function formatDynamics(dynamics) {
-  const state = normalizeText(dynamics?.conversationalState || '').replace(/_/g, ' ');
-  const clientRatio = Number(dynamics?.clientRatio || 0);
-  const therapistRatio = Number(dynamics?.therapistRatio || 0);
-  if (clientRatio || therapistRatio) {
-    return `${state || 'listening'} | ${Math.round(clientRatio)} client / ${Math.round(therapistRatio)} you`;
-  }
-  return state ? `${state} | talk ratio pending` : '';
-}
-
 function formatTalkRatio(dynamics) {
   const clientRatio = Number(dynamics?.clientRatio || 0);
   const therapistRatio = Number(dynamics?.therapistRatio || 0);
@@ -168,14 +237,17 @@ function takeWrappedLines(text, zone, count) {
   return kept;
 }
 
-export function wrapText(text, width) {
+// Pixel-accurate wrapping using the LVGL font metrics Even Hub renders with.
+// The previous char-count approximation (34ch etc.) truncated wide-glyph
+// lines mid-word and wasted width on narrow-glyph lines.
+export function wrapText(text, widthPx) {
   const words = normalizeText(text).split(/\s+/).filter(Boolean);
   const lines = [];
   let line = '';
   for (const word of words) {
-    const safeWord = word.length > width ? fitLine(word, width) : word;
+    const safeWord = getTextWidth(word) > widthPx ? pxTruncate(word, widthPx) : word;
     const next = line ? `${line} ${safeWord}` : safeWord;
-    if (next.length > width && line) {
+    if (getTextWidth(next) > widthPx && line) {
       lines.push(line);
       line = safeWord;
     } else {
@@ -199,12 +271,12 @@ function capZone(zone, lines) {
 }
 
 function fitLine(value, zoneOrWidth) {
-  const width = typeof zoneOrWidth === 'number' ? zoneOrWidth : zoneWidth(zoneOrWidth);
+  const widthPx = typeof zoneOrWidth === 'number' ? zoneOrWidth : zoneWidth(zoneOrWidth);
   const text = normalizeText(value);
-  if (text.length <= width) return text;
-  return `${text.slice(0, Math.max(0, width - 3)).trimEnd()}...`;
+  if (getTextWidth(text) <= widthPx) return text;
+  return pxTruncate(text, widthPx);
 }
 
 function zoneWidth(zone) {
-  return (ZONE_LIMITS[zone] || ZONE_LIMITS.mid).width;
+  return (ZONE_LIMITS[zone] || ZONE_LIMITS.mid).widthPx;
 }
