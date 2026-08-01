@@ -1,0 +1,307 @@
+{
+  "name": "Choosing to Speak — SimplePractice2 Context Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 5 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Daily 5:45 AM ET",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/calendar/v3/calendars/f6db2ab6000784fae5ce72bff233f76823f9eb11425bf2884bada9c4aed441cc%40group.calendar.google.com/events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "timeMin",
+              "value": "={{ $now.setZone('America/New_York').startOf('day').toISO() }}"
+            },
+            {
+              "name": "timeMax",
+              "value": "={{ $now.setZone('America/New_York').endOf('day').toISO() }}"
+            },
+            {
+              "name": "timeZone",
+              "value": "America/New_York"
+            },
+            {
+              "name": "singleEvents",
+              "value": "true"
+            },
+            {
+              "name": "orderBy",
+              "value": "startTime"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Get Calendar Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        250,
+        300
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "UindCK5GkrI0gDDy",
+          "name": "Google Calendar account"
+        }
+      },
+      "notes": "Use the existing n8nitro Google Calendar credential for the SimplePractice2 calendar. No secrets are stored in this workflow export."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const CLIENT_DB_MAP = {\n  'Amberly Comeau': 'ad7c33b0c7b4441ca44405c0a4348db2',\n  'Andrew Ross': '21a9f30def818185b26ed20f697006ba',\n  'Angelica Ruden': '13f83899fa284cf2a983452ad8754e5a',\n  'Ava Moskowitz': '3179f30def8181148697f41acb11c93e',\n  'Billy Aymami': '21a9f30def81813ebb15d193d0657a62',\n  'Brian Kolsch': '88b42bb2055346f98e5817d47f40ecaa',\n  'Brianna Brickman': '2fc9f30def8181359c0bece3df614f26',\n  'Caitlin Dunn': '652f29db9d174fea89a201fb90b12d17',\n  'Calvin Hill': 'ea0b176b5f4b40aaac7d365216c9c195',\n  'Carlos Guerra': '3179f30def81816788e1cda3dd679735',\n  'Chris Balabanick': '2fc9f30def8181c0891fe0186cefe032',\n  'Christopher Wright': '3179f30def81816f849fe8d02cddeec8',\n  'Cyrus Tingley': '21a9f30def81811fb75afa997488d5a0',\n  'Dan Settle': '029d8cbe0ccb42e4b542597100bbc3a3',\n  'David Grossman': '6f1937fa23c84530b10d5cf629076c74',\n  'Freddy Rodriguez': '9d4f0d2d53cc44578bbb61cda2234add',\n  'Gavin Fisch': '028b03c4754341f796281bcc5b12029a',\n  'Gavin Perna': '78b5631b41954a92ac95b0a06987d54e',\n  'Hector Mendez': '21a9f30def8181bd82dcfd6f31b2db66',\n  'Ian Moskowitz': '21a9f30def8181608279ec9c1c08d294',\n  'JK': '21a9f30def8181269bc3dfa4586bbd7c',\n  'James Fusco': '3179f30def81816cb8c7d71a68357786',\n  'James Wright': '21a9f30def818118b358e078800a5bc3',\n  'Jaquan Williams': '408534a61244447fbe6e5387031ac9ad',\n  'Jared Vignola': '21a9f30def8181989ff3eca83bca4dde',\n  'Jason Laskin': '6abf2db8223648d79f04b34af1dcccdd',\n  'Jennifer McNally': '560175dec493489185bd758181f61a97',\n  'Jerry Mackey': '3179f30def818129a719d185193b4acb',\n  'John Best': '9b432c2910414971bdc0fa969f3a1fba',\n  'Jordano Sanchez': '89dacc9e843a4ed8a77e25d2cac4f29e',\n  'Karen Foster': '593ead4bbad44e1b9d7704461ac7cd89',\n  'Kenny Doyle': '21a9f30def818100b9f7f90348c5e94f',\n  'Kieran Kriss': '21a9f30def818173bbb6df7bbb05dd5b',\n  'Krista Flood': '67a9f33a33224edeb49e72704e5a18a7',\n  'Kristi Rook': '652f1e9df2b1454b829e7a24cfefe899',\n  'Lindsey Grossman': '21a9f30def81814187b7e497e1744b9a',\n  'Luke Knox': '999f32e391a2490cb58bdcf69f88d5b7',\n  'Mary Camarano': '21a9f30def818158bebde3532e63d751',\n  'Maryellen Dankenbrink': '3179f30def8181c8bf83ce8e384bfe49',\n  'Matt Paccione': '21a9f30def8181d19116fbe7ad488357',\n  'Matthew Michelson': '3179f30def81819e99cee37c05cb8ffb',\n  'Max Hafker': '1400f541259246f7bee2bb99fbafcf9d',\n  'Max Moskowitz': '6308a4f85cf747c1ba6c4e417d25eec6',\n  'Meera Zucker': '01228227969442bb9d78f579f55f7179',\n  'Michael Bower & Bob Delmond': 'd27154fd6e5f49f3929b9a860c174fdc',\n  'Michael Cserenyi': 'dc068eaf97c548279957b976c2ad5651',\n  'Michael Neira': 'effde1c195e9402baa75a9b1b44256eb',\n  'Nancy Grossman': '3179f30def81813f85d5ff8c6214faec',\n  'Nick Bonomi': 'ab7a2a5ea28c4fca96a3fe8145267da1',\n  'Nick Dabreu': '2fc9f30def81816e854cce1f539caaee',\n  'Nico Luppino': 'b94bbe034e9048938a30b999b4a735ec',\n  'Niko Jurios': '3179f30def8181c68ce3eda9e95f5785',\n  'Noah Silverman': 'c953777b704747b1b9a571e3a85eb991',\n  'Owen Lennon': 'fdb344eee23642da84561214dada04b8',\n  'Paul Benjamin': 'b08f248fb1cb4f3d887f546dd558ab88',\n  'Richie Hayes': 'b47fa8ce40ab4288b9f6755c8f5e5fe5',\n  'Ruben Spilberg': '7b62eabe1e9a4d4fa7f91df5d51d6685',\n  'Sacha Jones': '21a9f30def8181a6801feccc833f4289',\n  'Saleesha Baksh': '677d2b45e24e43338de80c02aebb1484',\n  'Sarah Palladino': '57286f70bb4440989d3402e488854e15',\n  'Sarah Thomas': '40409a00fae7404283bcc3dc1c669a6d',\n  'Sherrifa Hoosein': 'e18417d15ca7424786f08071a5bb15c8',\n  'Steven Deluca': 'b48ebb046033486da9e96a934ec06844',\n  'Susan Hannigan': '9419495dbd5e460a9cab465feb5dd3f3',\n  'Tom Remy': '3179f30def81813a9939ebe0ca059646',\n  'Tomas Wasserman': '21a9f30def818159b8b7e251ad4157bd',\n  'Trendall Storey': 'c6337ecded9d438382c79bc61ab8f1c0',\n  'Valentina Gjidoda': '1f50663a7e5240fc8b91d27695e2cb70',\n  'Vivian Meador': '3179f30def8181dcb36ad5b870147054',\n  'Zena Frey': '44f64d57ee444fc0aa2f19b06f65ef3a'\n};\n\nconst NAME_ALIASES = {\n  'Christopher Balabanick': 'Chris Balabanick',\n  'Freddy Junior Rodriguez': 'Freddy Rodriguez',\n  'Richard Hayes': 'Richie Hayes',\n  'Owen Andrew Lennon': 'Owen Lennon',\n  'Carlos Fabio Guerra': 'Carlos Guerra',\n  'William Aymami': 'Billy Aymami',\n  'Kenneth Doyle': 'Kenny Doyle',\n  'Matthew Paccione': 'Matt Paccione',\n  'John Michael Best': 'John Best',\n  'Nicholas Bonomi': 'Nick Bonomi',\n  'Nick George Jurios': 'Niko Jurios',\n  'Paul Nicholas Benjamin': 'Paul Benjamin'\n};\n\nconst NOTION_TOKEN = $env.NOTION_API_KEY_PLANNER || $env.NOTION_API_KEY || $env.NOTION_TOKEN;\n\nconst calendarData = $input.first().json;\nconst events = calendarData.items || [];\nif (events.length === 0) return [{ json: { sessions: [] } }];\n\nconst sessions = [];\nfor (const event of events) {\n  if (event.status === 'cancelled') continue;\n  let clientName = (event.summary || '').replace(' Appointment', '').trim();\n  clientName = NAME_ALIASES[clientName] || clientName;\n  const start = new Date(event.start.dateTime);\n  const end = new Date(event.end.dateTime);\n  const fmt = (d) => { return d.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }); };\n  const session = { client: clientName, time: fmt(start), end: fmt(end), location: event.location||'Rockville Centre', last_note:'N/A', note_content:'' };\n  const dbId = CLIENT_DB_MAP[clientName];\n  if (dbId) {\n    try {\n      const dbResp = await this.helpers.httpRequest({ method:'POST', url:`https://api.notion.com/v1/databases/${dbId}/query`, headers:{'Authorization':`Bearer ${NOTION_TOKEN}`,'Notion-Version':'2022-06-28','Content-Type':'application/json'}, body: JSON.stringify({sorts:[{property:'Session Date',direction:'descending'}],page_size:5}) });\n      const parsed = typeof dbResp === 'string' ? JSON.parse(dbResp) : dbResp;\n      if (parsed.results && parsed.results.length > 0) {\n        const textProp = (props, name) => {\n          const prop = props[name];\n          if (!prop) return '';\n          if (prop.rich_text) return prop.rich_text.map(t => t.plain_text).join(' ');\n          if (prop.title) return prop.title.map(t => t.plain_text).join(' ');\n          if (prop.select) return prop.select.name || '';\n          if (prop.date) return prop.date.start || '';\n          return '';\n        };\n        session.previousSessionNotes = parsed.results.slice(0, 5).map((notePage) => {\n          const np = notePage.properties || {};\n          const title = textProp(np, 'Session Title') || textProp(np, 'Name') || 'Progress note';\n          const sessionDate = textProp(np, 'Session Date');\n          const summary = [\n            textProp(np, 'Session Summary'),\n            textProp(np, 'Clinical Observations'),\n            textProp(np, 'Key Themes'),\n            textProp(np, 'Treatment Goals'),\n            textProp(np, 'Risk Assessment'),\n            textProp(np, 'Next Session Plan') || textProp(np, 'Next Session Plans'),\n          ].filter(Boolean).join(' ').slice(0, 1200);\n          return {\n            sessionDate,\n            title,\n            summary,\n            themes: textProp(np, 'Key Themes') ? [textProp(np, 'Key Themes')] : [],\n            goals: textProp(np, 'Treatment Goals') ? [textProp(np, 'Treatment Goals')] : [],\n            risks: textProp(np, 'Risk Assessment') ? [textProp(np, 'Risk Assessment')] : [],\n            nextSteps: (textProp(np, 'Next Session Plan') || textProp(np, 'Next Session Plans')) ? [textProp(np, 'Next Session Plan') || textProp(np, 'Next Session Plans')] : [],\n            sourceUrl: notePage.url || '',\n          };\n        }).filter(note => note.summary || note.title);\n        // Pick the result with the most recent date in the title (MM-DD-YYYY)\n        let page = parsed.results[0];\n        let bestDate = 0;\n        for (const r of parsed.results) {\n          const tp = r.properties||{}; const tt = tp['Session Title']||tp['Name']||tp['title'];\n          if (tt && tt.title && tt.title[0]) {\n            const dm = tt.title[0].plain_text.match(/(\\d{1,2})-(\\d{1,2})-(\\d{4})/);\n            if (dm) { const ts = new Date(parseInt(dm[3]),parseInt(dm[1])-1,parseInt(dm[2])).getTime(); if (ts > bestDate) { bestDate=ts; page=r; } }\n          }\n          // Also check Session Date property\n          if (tp['Session Date'] && tp['Session Date'].date && tp['Session Date'].date.start) {\n            const ts = new Date(tp['Session Date'].date.start).getTime(); if (ts > bestDate) { bestDate=ts; page=r; }\n          }\n        }\n        const props = page.properties||{};\n        if (props['Session Date'] && props['Session Date'].date) session.last_note = props['Session Date'].date.start||'N/A';\n        else { const t=props['Session Title']||props['Name']||props['title']; if(t&&t.title&&t.title[0]){const m=t.title[0].plain_text.match(/(\\d{1,2})-(\\d{1,2})-(\\d{4})/); if(m) session.last_note=`${m[1]}/${m[2]}/${m[3]}`;} }\n        try {\n          const blk = await this.helpers.httpRequest({ method:'GET', url:`https://api.notion.com/v1/blocks/${page.id}/children?page_size=100`, headers:{'Authorization':`Bearer ${NOTION_TOKEN}`,'Notion-Version':'2022-06-28'} });\n          const bp = typeof blk === 'string' ? JSON.parse(blk) : blk;\n          const tp=[]; for(const b of (bp.results||[])){const c=b[b.type]; if(c&&c.rich_text){const x=c.rich_text.map(t=>t.plain_text).join(''); if(x)tp.push(x);}} session.note_content=tp.join('\\n').substring(0,3000);\n        } catch(e) { session.note_content='Could not fetch page content'; }\n        const gp=(p)=>{if(!props[p])return''; if(props[p].rich_text)return props[p].rich_text.map(t=>t.plain_text).join(''); if(props[p].title)return props[p].title.map(t=>t.plain_text).join(''); return'';};\n        session.clinical_observations=gp('Clinical Observations'); session.key_themes=gp('Key Themes'); session.treatment_goals=gp('Treatment Goals'); session.risk_assessment=gp('Risk Assessment'); session.next_session_plans=gp('Next Session Plans');\n      }\n    } catch(e) { session.note_content=`Error: ${e.message}`; }\n  } else { session.note_content='No Notion database found for this client.'; }\n  sessions.push(session);\n}\nreturn [{json:{sessions, date: new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())}}];"
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Parse Events & Fetch Notion Notes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ],
+      "notes": "Uses NOTION_API_KEY_PLANNER, NOTION_API_KEY, or NOTION_TOKEN from n8nitro env. Keep this duplicate secret-free."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build the OpenRouter request body as proper JSON\nconst data = $input.first().json;\nconst sessions = data.sessions || [];\n\nconst systemPrompt = 'You are a clinical psychotherapy assistant for Jonathan Procter, Ph.D., LMHC. Generate pre-session preparation content for each client session today. For each client, produce EXACTLY this JSON structure: {\"prep\": \"2-4 sentences: what happened last session, key themes, what to follow up on, any flags\", \"summary\": \"3-5 sentences: where the client is in their therapeutic trajectory, core patterns, what is working\", \"questions\": [\"reflective question 1\", \"reflective question 2\", \"reflective question 3\"]} Questions should: follow up on specific content from last session, promote self-reflection using the client own language and metaphors, be open-ended (how/what, not yes/no), match the client therapeutic modality (ACT values language for ACT clients, etc.). Return a JSON array with one object per client, each having: client (name), prep, summary, questions. Return ONLY valid JSON, no markdown code blocks.';\n\nconst clientBlocks = sessions.map((s, i) => {\n  return `CLIENT ${i+1}: ${s.client}\\nLast note date: ${s.last_note}\\nClinical Observations: ${s.clinical_observations || 'N/A'}\\nKey Themes: ${s.key_themes || 'N/A'}\\nTreatment Goals: ${s.treatment_goals || 'N/A'}\\nRisk Assessment: ${s.risk_assessment || 'N/A'}\\nNext Session Plans: ${s.next_session_plans || 'N/A'}\\nNote Content: ${(s.note_content || 'No content available').substring(0, 1500)}`;\n}).join('\\n---\\n');\n\nconst userPrompt = `Generate pre-session content for today's ${sessions.length} sessions:\\n\\n${clientBlocks}`;\n\nconst requestBody = {\n  model: 'anthropic/claude-sonnet-4',\n  max_tokens: 8000,\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: userPrompt }\n  ]\n};\n\nreturn [{ json: { requestBody, originalData: data } }];"
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000010",
+      "name": "Build AI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "https://jonathan.apps.n8nitro.com"
+            },
+            {
+              "name": "X-Title",
+              "value": "reMarkable Daily Planner"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "OpenRouter - Generate Content",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "RGO9nQsApDV8p5kx",
+          "name": "OpenRouter Bearer Auth"
+        }
+      },
+      "notes": "Use the existing n8nitro Header Auth credential named OpenRouter API. No API key is stored in this workflow export."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const openrouterResponse = $input.first().json;\nconst sessionData = $('Build AI Request').first().json.originalData;\n\nlet generatedContent = [];\ntry {\n  const responseText = openrouterResponse.choices[0].message.content;\n  const jsonStr = responseText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  generatedContent = JSON.parse(jsonStr);\n} catch (e) {\n  generatedContent = sessionData.sessions.map(s => ({\n    client: s.client,\n    prep: 'Last documented session: ' + s.last_note + '. Review notes before session.',\n    summary: 'Content generation failed. Assess current state broadly.',\n    questions: ['How have things been since we last met?','What feels most important to talk about today?','Is there anything from last time that stayed with you?']\n  }));\n}\n\nconst finalSessions = sessionData.sessions.map((session, i) => {\n  const content = generatedContent.find(c => c.client && c.client.toLowerCase() === session.client.toLowerCase()) || generatedContent[i] || {};\n  return {\n    client: session.client, time: session.time, end: session.end, location: session.location, last_note: session.last_note,\n    note_content: session.note_content, clinical_observations: session.clinical_observations, key_themes: session.key_themes,\n    treatment_goals: session.treatment_goals, risk_assessment: session.risk_assessment, next_session_plans: session.next_session_plans,\n    previousSessionNotes: session.previousSessionNotes || [],\n    prep: content.prep || 'Last note: ' + session.last_note + '. No generated prep available.',\n    summary: content.summary || 'No summary available.',\n    questions: content.questions || ['How have things been since we last met?','What feels most important today?','Anything from last session that stayed with you?']\n  };\n});\n\nconst nowUTC = new Date();\nconst etOpts = { timeZone: 'America/New_York' };\nconst etParts = new Intl.DateTimeFormat('en-US', { ...etOpts, weekday:'long', year:'numeric', month:'long', day:'numeric' }).formatToParts(nowUTC);\nconst getPart = (type) => etParts.find(p => p.type === type)?.value || '';\nconst dn = getPart('weekday');\nconst mn = getPart('month');\nconst d = parseInt(getPart('day'));\nconst y = parseInt(getPart('year'));\nconst msh = new Intl.DateTimeFormat('en-US', { ...etOpts, month:'short' }).format(nowUTC);\nconst janFirst = new Date(y, 0, 1);\nconst wk = Math.ceil(((nowUTC - janFirst) / 86400000 + janFirst.getDay() + 1) / 7);\n\nreturn [{json:{\n  date: sessionData.date, day_of_week: dn,\n  daily_date: dn+', '+mn+' '+d+', '+y,\n  daily_date_short: msh+' '+d+', '+y,\n  month_name: mn, year: y, week_num: wk,\n  location: finalSessions[0]?.location || 'Rockville Centre',\n  sessions: finalSessions\n}}];"
+      },
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "Build Final Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://speak.procterai.cc/v1/day_roster",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 120000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.CTS_BETA_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0006-4000-8000-000000000006",
+      "name": "Send to Choosing to Speak Brain",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1750,
+        300
+      ],
+      "notes": "Posts normalized roster and prep directly to Choosing to Speak. Configure CTS_BETA_TOKEN in n8nitro env."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $input.first().json;\nconst safe = (value) => value == null ? '' : String(value).trim();\nconst slug = (value) => safe(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'client';\nconst questions = (session) => Array.isArray(session.questions) ? session.questions.filter(Boolean) : [];\nconst previousNotes = (session) => {\n  if (Array.isArray(session.previousSessionNotes) && session.previousSessionNotes.length) return session.previousSessionNotes.slice(0, 5);\n  if (Array.isArray(session.recentSessionNotes) && session.recentSessionNotes.length) return session.recentSessionNotes.slice(0, 5);\n  if (Array.isArray(session.notionSessionNotes) && session.notionSessionNotes.length) return session.notionSessionNotes.slice(0, 5);\n  const note = safe(session.note_content || session.last_note_summary);\n  if (!note || note.startsWith('VERIFY CLIENT DATABASE') || note.startsWith('No Notion database found')) return [];\n  return [{\n    sessionDate: safe(session.last_note),\n    title: 'Most recent Notion progress note',\n    summary: note.slice(0, 1200),\n    themes: safe(session.key_themes) ? [safe(session.key_themes)] : [],\n    goals: safe(session.treatment_goals) ? [safe(session.treatment_goals)] : [],\n    risks: safe(session.risk_assessment) ? [safe(session.risk_assessment)] : [],\n    nextSteps: safe(session.next_session_plans) ? [safe(session.next_session_plans)] : [],\n  }];\n};\nconst rosterDate = safe(input.date) || new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());\nconst entries = (input.sessions || []).map((session, index) => {\n  const client = safe(session.client || session.clientName || session.displayName);\n  if (!client) return null;\n  return {\n    eventId: 'n8n-' + rosterDate + '-' + index + '-' + slug(client),\n    clientId: 'client-' + slug(client),\n    clientName: client,\n    displayName: client,\n    start: safe(session.time || session.start || session.startsAt),\n    end: safe(session.end || session.endsAt),\n    durationMinutes: 50,\n    status: safe(session.status) || 'scheduled',\n    notes: safe(session.location),\n    summary: safe(session.summary),\n    prep: safe(session.prep),\n    sessionPrep: safe(session.prep),\n    bestQuestions: questions(session),\n    previousSessionNotes: previousNotes(session),\n    contextSource: 'n8nitro-simplepractice-notion-sync',\n  };\n}).filter(Boolean);\nreturn [{ json: {\n  rosterDate,\n  lensId: 'clinical',\n  source: 'n8nitro-simplepractice-notion-sync',\n  replace: true,\n  updatedAt: new Date().toISOString(),\n  entries,\n} }];"
+      },
+      "id": "a1b2c3d4-0007-4000-8000-000000000007",
+      "name": "Build Choosing to Speak Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        300
+      ],
+      "notes": "Normalizes the existing planner payload into the Choosing to Speak /v1/day_roster contract."
+    }
+  ],
+  "connections": {
+    "Get Calendar Events": {
+      "main": [
+        [
+          {
+            "node": "Parse Events & Fetch Notion Notes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Events & Fetch Notion Notes": {
+      "main": [
+        [
+          {
+            "node": "Build AI Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Request": {
+      "main": [
+        [
+          {
+            "node": "OpenRouter - Generate Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter - Generate Content": {
+      "main": [
+        [
+          {
+            "node": "Build Final Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Payload": {
+      "main": [
+        [
+          {
+            "node": "Build Choosing to Speak Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 5:45 AM ET": {
+      "main": [
+        [
+          {
+            "node": "Get Calendar Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Choosing to Speak Payload": {
+      "main": [
+        [
+          {
+            "node": "Send to Choosing to Speak Brain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "tags": [
+    {
+      "name": "reMarkable"
+    },
+    {
+      "name": "daily-planner"
+    },
+    {
+      "name": "clinical"
+    }
+  ]
+}

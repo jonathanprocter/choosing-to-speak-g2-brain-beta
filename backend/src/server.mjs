@@ -12,7 +12,8 @@ const PUBLIC_BASE_URL = (env.VELVETSPEAK_PUBLIC_BASE_URL || `http://${HOST}:${PO
 const OPENAI_MODEL = env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_TRANSCRIBE_MODEL = env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const PROVIDER = 'choosing-to-speak-brain-backend';
-const VERSION = '0.1.5';
+const VERSION = '0.1.7';
+const BETA_ENROLLMENT_MODE = (env.BETA_ENROLLMENT_MODE || 'open').toLowerCase() === 'closed' ? 'closed' : 'open';
 const JONATHAN_VOICE_ENABLED = env.JONATHAN_VOICE_ENABLED !== 'false';
 const MEMORY_DB_PATH = env.MEMORY_DB_PATH || env.SQLITE_DB_PATH || new URL('../data/choosing-to-speak-memory.sqlite', import.meta.url).pathname;
 const MEMORY_MAX_SESSIONS = env.MEMORY_MAX_SESSIONS || 500;
@@ -99,8 +100,34 @@ async function handleHttp(req, res) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/v1/transcribe/stream') {
+    sendJson(res, 426, {
+      ok: false,
+      error: {
+        code: 'UPGRADE_REQUIRED',
+        message: 'This route is a WebSocket endpoint; connect with a WebSocket client.'
+      },
+      stream: {
+        url: `${PUBLIC_BASE_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/v1/transcribe/stream`,
+        subprotocol: 'velvetspeak-stt.v1',
+        authRequired: Boolean(BETA_TOKEN),
+        readiness: [
+          'On connect the server sends {"type":"stream.hello"} immediately.',
+          'Send {"type":"Authenticate","token":"<beta token>"} to receive {"type":"stream.ready"}.',
+          'A probe that only waits for stream.ready without authenticating will time out by design.'
+        ]
+      }
+    });
+    return;
+  }
+
   if (req.method !== 'POST' && req.method !== 'DELETE') {
     sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Route not found.' } });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/beta_bootstrap') {
+    await handleBetaBootstrap(req, res);
     return;
   }
 
@@ -163,6 +190,9 @@ async function handleHttp(req, res) {
     case '/v1/memory/sessions':
       handleMemorySessionUpload(res, body);
       return;
+    case '/v1/session_summary':
+      handleSessionSummary(res, body);
+      return;
     case '/v1/client_context':
       handleClientContextUpload(res, body);
       return;
@@ -196,10 +226,13 @@ function healthPayload() {
       coachReview: `${PUBLIC_BASE_URL}/v1/coach_review`,
       questionCues: `${PUBLIC_BASE_URL}/v1/question_cues`,
       memorySessions: `${PUBLIC_BASE_URL}/v1/memory/sessions`,
+      sessionSummary: `${PUBLIC_BASE_URL}/v1/session_summary`,
       clientContext: `${PUBLIC_BASE_URL}/v1/client_context`,
       dayRoster: `${PUBLIC_BASE_URL}/v1/day_roster`,
-      clientCandidate: `${PUBLIC_BASE_URL}/v1/client_candidate`
+      clientCandidate: `${PUBLIC_BASE_URL}/v1/client_candidate`,
+      betaBootstrap: `${PUBLIC_BASE_URL}/v1/beta_bootstrap`
     },
+    betaEnrollment: { mode: BETA_ENROLLMENT_MODE },
     voiceLock: {
       enabled: false,
       message: 'VoiceLock is intentionally not part of this beta backend.'
@@ -427,6 +460,28 @@ function handleMemorySessionUpload(res, body) {
   });
 }
 
+function handleSessionSummary(res, body) {
+  const session = normalizeSessionSummary(body);
+  if (!session) {
+    sendJson(res, 400, {
+      ok: false,
+      error: {
+        code: 'INVALID_SESSION_SUMMARY',
+        message: 'Session summary needs a session id plus at least one transcript turn, scene, or client context item.'
+      }
+    });
+    return;
+  }
+  const stored = memoryStore.upsertSession(session);
+  sendJson(res, 200, {
+    ok: true,
+    type: 'session_summary.result.v1',
+    sessionId: session.sessionId,
+    storedItems: stored.storedItems,
+    storedAt: session.uploadedAt
+  });
+}
+
 function handleMemoryPurge(res) {
   const purged = memoryStore.purgeAll();
   sendJson(res, 200, { ok: true, purged });
@@ -647,12 +702,13 @@ async function askOpenAICoach(context) {
     'If the transcript is not a question, cue the next therapeutic move that advances the session goal.',
     'Do not diagnose, over-pathologize, moralize, or move faster than the client.',
     'Do not mention being an AI. Do not give a long analysis.',
+    'Visible glasses text must be plain text only: no Markdown, bullets, headings, bold, italics, backticks, blockquotes, links, or numbered lists.',
     JONATHAN_VOICE_ENABLED ? JONATHAN_LIVE_RESPONSE_VOICE : '',
     'Return JSON only: {"teaser":"...","explanation":"...","sayThis":["..."]}',
-    'Constraints: teaser <= 48 characters. explanation <= 135 characters. sayThis has 0-1 speakable lines <= 95 characters.',
+    'Constraints: teaser <= 34 characters. explanation <= 110 characters. sayThis has 0-1 plain line <= 78 characters.',
     `Lens: ${context.lensId || 'default'}`,
     context.sessionLanguage && context.sessionLanguage !== 'en' ? `Language: ${context.sessionLanguage}` : '',
-    context.memory.length ? `SCENE CONTEXT:\n${context.memory.map((item) => `- ${item}`).join('\n')}` : '',
+    context.memory.length ? `SCENE CONTEXT: ${context.memory.map((item) => cleanText(item)).join(' | ')}` : '',
     context.clientContext?.hints ? `Client context used: ${context.clientContext.hints} hint(s)` : '',
     context.dynamics ? `Dynamics: ${JSON.stringify(context.dynamics)}` : '',
     `Recent transcript:\n${context.transcript}`
@@ -866,10 +922,10 @@ function parseCoachJson(text) {
   } catch {
     return null;
   }
-  const teaser = truncate(cleanText(raw.teaser), 70);
-  const explanation = truncate(cleanText(raw.explanation), 135);
+  const teaser = truncate(cleanText(raw.teaser), 42);
+  const explanation = truncate(cleanText(raw.explanation), 110);
   const sayThis = Array.isArray(raw.sayThis)
-    ? raw.sayThis.map((line) => truncate(cleanText(line), 95)).filter(Boolean).slice(0, 1)
+    ? raw.sayThis.map((line) => truncate(cleanText(line), 78)).filter(Boolean).slice(0, 1)
     : [];
   if (!teaser || !explanation) return null;
   return { nudge: { teaser, explanation }, sayThis };
@@ -1801,8 +1857,8 @@ function cuePayload({ source, teaser, explanation, question, reason, modality, t
     expiresAt,
     deliveryAction: 'cue',
     nudge: {
-      teaser: truncate(cleanText(teaser), 64),
-      explanation: truncate(cleanText(explanation), 180)
+      teaser: truncate(cleanText(teaser), 42),
+      explanation: truncate(cleanText(explanation), 120)
     },
     questions: [
       {
@@ -1908,6 +1964,62 @@ function normalizeMemorySession(body) {
     uploadedAt: new Date().toISOString(),
     items
   };
+}
+
+function normalizeSessionSummary(body) {
+  const source = isRecord(body?.input) ? body.input : body;
+  if (!isRecord(source)) return null;
+  const selectedClient = isRecord(source.selectedClient)
+    ? source.selectedClient
+    : isRecord(source.clientCandidate)
+      ? source.clientCandidate
+      : {};
+  const sessionId = cleanText(source.sessionId || source.id || source.requestId) || requestId('session-summary');
+  const lensId = cleanText(source.lensId || source.activeLensId || 'clinical') || 'clinical';
+  const sessionStartedAt = normalizeDate(source.sessionStartedAt || source.startedAt || source.createdAt || source.at) || new Date().toISOString();
+  const items = [];
+  const pushItem = (kind, value, max = 600) => {
+    const bodyText = truncate(cleanText(value), max);
+    const itemKind = normalizeItemKind(kind);
+    if (bodyText && itemKind) items.push({ kind: itemKind, body: bodyText });
+  };
+
+  const displayName = cleanText(selectedClient.displayName || selectedClient.clientName || selectedClient.name || '');
+  if (displayName) {
+    const startsAt = normalizeDate(selectedClient.startsAt || selectedClient.startAt || selectedClient.startTime);
+    pushItem('selected_client', [displayName, startsAt ? `starts ${startsAt}` : ''].filter(Boolean).join(' - '), 240);
+  }
+  pushItem('scene', source.currentScene || source.scene || source.context);
+
+  const memoryItems = Array.isArray(source.memoryContext?.items) ? source.memoryContext.items : [];
+  for (const hint of memoryItems.slice(0, 8)) {
+    pushItem('prep_hint', hint);
+  }
+
+  const turns = Array.isArray(source.recentTurns)
+    ? source.recentTurns
+    : Array.isArray(source.turns)
+      ? source.turns
+      : [];
+  turns.slice(-24).forEach((turn, index) => {
+    const text = cleanText(isRecord(turn) ? turn.text || turn.transcript || turn.body || '' : turn);
+    if (!text) return;
+    const speaker = cleanText(turn?.speakerKind || turn?.speaker || turn?.speakerLabel || '').toUpperCase();
+    const kind = speaker === 'ME' || speaker === 'THERAPIST' || speaker === 'CLINICIAN'
+      ? 'therapist_turn'
+      : speaker === 'NOT_ME' || speaker === 'CLIENT' || speaker === 'OTHER'
+        ? 'client_turn'
+        : 'turn';
+    pushItem(kind, `${index + 1}. ${text}`);
+  });
+
+  if (!items.length) pushItem('transcript', source.recentTranscript || source.transcript, 1200);
+  return normalizeMemorySession({
+    sessionId,
+    lensId,
+    sessionStartedAt,
+    items: uniqueClientItems(items).slice(0, 32)
+  });
 }
 
 function rememberDebrief(input, debrief) {
@@ -2147,7 +2259,24 @@ function summarizeQuestion(text) {
 }
 
 function cleanText(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim();
+  return stripMarkdown(value).replace(/\s+/g, ' ').trim();
+}
+
+function stripMarkdown(value) {
+  return String(value || '')
+    .replace(/```[a-zA-Z0-9_-]*\s*/g, ' ')
+    .replace(/```/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+[.)]\s+/gm, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(\*|_)(.*?)\1/g, '$2')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[>#*`|]/g, ' ');
 }
 
 function truncate(text, max) {
@@ -2158,10 +2287,75 @@ function isRecord(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
 }
 
+async function handleBetaBootstrap(req, res) {
+  const body = await readJson(req);
+  const deviceId = cleanText(body?.deviceId || '').slice(0, 128);
+  const packageId = cleanText(body?.packageId || '').slice(0, 128);
+  const enrolledAt = new Date().toISOString();
+  if (!deviceId || deviceId.length < 6) {
+    sendJson(res, 400, {
+      ok: false,
+      error: { code: 'BAD_REQUEST', message: 'deviceId (>= 6 chars) is required.' }
+    });
+    return;
+  }
+  if (BETA_ENROLLMENT_MODE === 'closed') {
+    const existing = memoryStore.enrollBetaKey({ deviceId, packageId, at: enrolledAt });
+    if (existing?.token) {
+      sendJson(res, 200, {
+        ok: true,
+        token: existing.token,
+        created: false,
+        keyState: 'ready',
+        enrollment: BETA_ENROLLMENT_MODE
+      });
+    } else {
+      sendJson(res, 403, {
+        ok: false,
+        error: { code: 'ENROLLMENT_CLOSED', message: 'Beta enrollment is closed on this backend.' }
+      });
+    }
+    return;
+  }
+  const minted = `vs_live_${crypto.randomBytes(20).toString('hex')}`;
+  const result = memoryStore.enrollBetaKey({
+    token: minted,
+    deviceId,
+    packageId,
+    at: enrolledAt
+  });
+  if (!result?.token) {
+    sendJson(res, 500, {
+      ok: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Could not enroll this device.' }
+    });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    token: result.token,
+    created: result.created,
+    keyState: 'ready',
+    enrollment: BETA_ENROLLMENT_MODE
+  });
+}
+
 function isAuthorized(req) {
   if (!BETA_TOKEN) return true;
   const header = req.headers.authorization || '';
-  return header === `Bearer ${BETA_TOKEN}`;
+  if (header === `Bearer ${BETA_TOKEN}`) return true;
+  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  return isEnrolledToken(bearer);
+}
+
+function isEnrolledToken(token) {
+  const value = String(token || '').trim();
+  if (!/^vs_live_[A-Za-z0-9]{32,}$/.test(value)) return false;
+  try {
+    return memoryStore.isBetaKeyValid(value);
+  } catch {
+    return false;
+  }
 }
 
 async function readJson(req) {
@@ -2274,6 +2468,14 @@ function handleWebSocket(req, socket, url) {
     heartbeat.unref();
   }
 
+  sendWs(socket, {
+    type: 'stream.hello',
+    service: PROVIDER,
+    version: VERSION,
+    protocol: 'velvetspeak-stt.v1',
+    authRequired: Boolean(BETA_TOKEN)
+  });
+
   if (authed) sendWs(socket, { type: 'stream.ready' });
 
   socket.on('data', (chunk) => {
@@ -2298,7 +2500,7 @@ function handleWebSocket(req, socket, url) {
         let parsed = null;
         try { parsed = JSON.parse(message); } catch {}
         if (parsed?.type === 'Authenticate') {
-          authed = !BETA_TOKEN || parsed.token === BETA_TOKEN;
+          authed = !BETA_TOKEN || parsed.token === BETA_TOKEN || isEnrolledToken(parsed.token);
           if (authed) sendWs(socket, { type: 'stream.ready' });
           else sendWs(socket, { type: 'stream.error', code: 'unauthorized', message: 'Missing or invalid bearer token.' });
         } else if (parsed?.type === 'CloseStream') {

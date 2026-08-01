@@ -33,6 +33,43 @@ try {
   assert.equal(health.memory.driver, 'sqlite');
   assert.equal(health.memory.persistent, true);
 
+  const streamHint = await fetch(`${base}/v1/transcribe/stream`);
+  assert.equal(streamHint.status, 426);
+  const streamHintBody = await streamHint.json();
+  assert.equal(streamHintBody.error.code, 'UPGRADE_REQUIRED');
+  assert.equal(streamHintBody.stream.authRequired, true);
+
+  const bootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'smoke-device-1', packageId: 'cc.procterai.choosingtospeak' })
+  }).then((res) => res.json());
+  assert.equal(bootstrap.ok, true);
+  assert.equal(bootstrap.created, true);
+  assert.match(bootstrap.token, /^vs_live_[A-Za-z0-9]{32,}$/);
+
+  const bootstrapAgain = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'smoke-device-1' })
+  }).then((res) => res.json());
+  assert.equal(bootstrapAgain.created, false);
+  assert.equal(bootstrapAgain.token, bootstrap.token);
+
+  const enrolledCoach = await fetch(`${base}/v1/coach`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrap.token}` },
+    body: JSON.stringify({ type: 'coach_digest', sessionId: 'enrolled-smoke', lensId: 'clinical', transcript: 'Hello there.' })
+  });
+  assert.equal(enrolledCoach.status, 200);
+
+  const badBootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'x' })
+  });
+  assert.equal(badBootstrap.status, 400);
+
   const answer = await fetch(`${base}/v1/live_brain`, {
     method: 'POST',
     headers,
@@ -282,6 +319,29 @@ try {
   assert.equal(clientCoach.clientContextUsed.rosterMatched, true);
   assert.match(clientCoach.sayThis.join(' '), /protect your Sunday/i);
 
+  const sessionSummary = await fetch(`${base}/v1/session_summary`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      sessionId: 'session-summary-smoke',
+      lensId: 'clinical',
+      at: '2026-08-01T03:45:00.000Z',
+      sessionStartedAt: '2026-08-01T03:30:00.000Z',
+      sessionEndedAt: '2026-08-01T03:45:00.000Z',
+      selectedClient: { clientId: 'client-smoke', displayName: 'Smoke Client', startsAt: '2026-08-01T03:30:00.000Z' },
+      currentScene: 'Current client: Smoke Client at 11:30 PM ET. Pre-session prep: protect your Sunday.',
+      recentTurns: [
+        { speakerKind: 'NOT_ME', text: 'My family keeps pushing me and I keep folding.', atMs: 1000, endedAtMs: 8000 },
+        { speakerKind: 'ME', text: 'Let us slow that down.', atMs: 8200, endedAtMs: 9500 }
+      ],
+      memoryContext: { items: ['client summary: Sleep debt raises conflict sensitivity.'] }
+    })
+  }).then((res) => res.json());
+  assert.equal(sessionSummary.ok, true);
+  assert.equal(sessionSummary.type, 'session_summary.result.v1');
+  assert.equal(sessionSummary.sessionId, 'session-summary-smoke');
+  assert.ok(sessionSummary.storedItems >= 4);
+
   const memoryHealth = await fetch(`${base}/v1/health`).then((res) => res.json());
   assert.ok(memoryHealth.memory.sessions >= 2);
   assert.ok(memoryHealth.memory.items >= 2);
@@ -291,8 +351,30 @@ try {
   assert.ok((await stat(memoryDbPath)).size > 0);
 
   await stopServer(child);
-  child = startServer({ port, token, memoryDbPath });
+  child = startServer({ port, token, memoryDbPath, extraEnv: { BETA_ENROLLMENT_MODE: 'closed' } });
   await waitForServer(port);
+
+  const persistedEnrolledCoach = await fetch(`${base}/v1/coach`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrap.token}` },
+    body: JSON.stringify({ type: 'coach_digest', sessionId: 'enrolled-restart-smoke', lensId: 'clinical', transcript: 'Still here.' })
+  });
+  assert.equal(persistedEnrolledCoach.status, 200);
+
+  const closedBootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'smoke-device-2' })
+  });
+  assert.equal(closedBootstrap.status, 403);
+
+  const closedRebootstrap = await fetch(`${base}/v1/beta_bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'smoke-device-1' })
+  }).then((res) => res.json());
+  assert.equal(closedRebootstrap.ok, true);
+  assert.equal(closedRebootstrap.token, bootstrap.token);
 
   const persistedCoach = await fetch(`${base}/v1/coach`, {
     method: 'POST',
@@ -345,6 +427,7 @@ try {
   assert.ok(memoryPurgeAll.purged >= 1);
 
   await smokeWebSocketStream({ port, token });
+  await smokeWebSocketStream({ port, token: bootstrap.token });
 
   console.log('Smoke tests passed');
 } finally {
@@ -352,7 +435,7 @@ try {
   await rm(tempRoot, { recursive: true, force: true });
 }
 
-function startServer({ port, token, memoryDbPath }) {
+function startServer({ port, token, memoryDbPath, extraEnv = {} }) {
   return spawn(process.execPath, ['src/server.mjs'], {
     cwd: new URL('..', import.meta.url),
     env: {
@@ -364,7 +447,8 @@ function startServer({ port, token, memoryDbPath }) {
       OPENAI_API_KEY: '',
       MEMORY_DB_PATH: memoryDbPath,
       MEMORY_MAX_SESSIONS: '20',
-      CALENDAR_TIME_ZONE: 'America/New_York'
+      CALENDAR_TIME_ZONE: 'America/New_York',
+      ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -442,9 +526,14 @@ async function smokeWebSocketStream({ port, token }) {
   assert.match(headerText, /Sec-WebSocket-Protocol: velvetspeak-stt\.v1/i);
 
   buffer = buffer.subarray(headerEnd + 4);
+
+  const hello = await readServerJson(socket, buffer);
+  assert.equal(hello.type, 'stream.hello');
+  assert.equal(hello.authRequired, true);
+
   socket.write(encodeClientFrame(Buffer.from(JSON.stringify({ type: 'Authenticate', token }), 'utf8'), 1));
 
-  const ready = await readServerJson(socket, buffer);
+  const ready = await readServerJson(socket, Buffer.alloc(0));
   assert.equal(ready.type, 'stream.ready');
   socket.end(encodeClientFrame(Buffer.from([0x03, 0xe8]), 8));
 }

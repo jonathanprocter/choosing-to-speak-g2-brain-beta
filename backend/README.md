@@ -102,6 +102,8 @@ The plugin bridge calls `POST /v1/client_candidate` to suggest the most likely c
 
 For scene setup, send the last 3-5 Notion notes as `previousSessionNotes`, `recentSessionNotes`, or `notionSessionNotes` on either the client prep payload or the matching roster entry. Each note may be plain text or an object with fields such as `sessionDate`, `title`, `summary`, `themes`, `patterns`, `goals`, `risks`, `avoid`, `nextSteps`, `suggestedQuestions`, and `notionUrl`. The backend keeps the five most recent notes, stores them with the client context in SQLite, and uses them for candidate hints, automatic question cues, and counselor-colleague coaching.
 
+The n8nitro duplicate workflow and direct Choosing upload path are documented in [`../docs/n8nitro-simplepractice-sync.md`](../docs/n8nitro-simplepractice-sync.md).
+
 ## Auth
 
 The plugin sends a bearer token. The server accepts the token in `VELVETSPEAK_BETA_TOKEN`.

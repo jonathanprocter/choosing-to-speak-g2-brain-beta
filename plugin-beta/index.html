@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Choosing to Speak</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Choosing to Speak <span id="version">v0.1.47</span></p>
+          <h1>Glasses-first counselor HUD</h1>
+          <p class="subcopy">Tap the G2 or R1 once to start listening. Double tap to stop.</p>
+        </div>
+        <div id="state-pill" class="pill">Booting</div>
+      </section>
+
+      <section class="panel">
+        <p class="label">Today</p>
+        <h2 id="client-line">Checking calendar context...</h2>
+        <p id="prep-line">Session prep appears on the glasses when available.</p>
+        <pre id="today-list" class="roster">Loading SimplePractice2 day roster...</pre>
+      </section>
+
+      <section class="panel">
+        <p class="label">Live status</p>
+        <pre id="phone-log">Waiting for Even Hub bridge...</pre>
+      </section>
+    </main>
+  </body>
+</html>
